@@ -1,0 +1,41 @@
+{
+  "metadata": {
+    "description": "Mock market prices for East African agricultural commodities",
+    "last_updated": "2026-01-29",
+    "currency_note": "Prices in USD/kg, local currency estimates provided"
+  },
+  "base_prices": {
+    "maize": {
+      "usd_per_kg": 0.30,
+      "description": "Dry grain maize"
+    },
+    "beans": {
+      "usd_per_kg": 0.80,
+      "description": "Common dry beans"
+    },
+    "tomatoes": {
+      "usd_per_kg": 0.50,
+      "description": "Fresh tomatoes"
+    }
+  },
+  "regional_multipliers": {
+    "Kigali": 1.15,
+    "Nairobi": 1.20,
+    "Kampala": 1.10,
+    "Mwanza": 0.95,
+    "Kisumu": 1.05,
+    "Butare": 0.90,
+    "Mombasa": 1.25,
+    "Dar es Salaam": 1.18
+  },
+  "exchange_rates": {
+    "RWF": 1250,
+    "KES": 155,
+    "UGX": 3800,
+    "TZS": 2500
+  },
+  "seasonal_notes": {
+    "harvest_season": "May-August typically sees lower prices due to supply",
+    "lean_season": "January-April sees higher prices before main harvest"
+  }
+}
