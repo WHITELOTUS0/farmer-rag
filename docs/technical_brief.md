@@ -98,7 +98,6 @@ Trace logs are saved in `logs/trace_YYYYMMDD_HHMMSS.json` and LangSmith captures
 ## 8) Contribution Statement (Template)
 
 - **Glorry Sibomana**: System design, RAG ingestion pipeline, tool implementation, evaluation/verification module, UI integration, and HW2 trace preparation.
-- **(Add group members here)**: Describe specific code, experiments, or documentation contributed.
 
 ## 9) Summary
 

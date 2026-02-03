@@ -51,14 +51,6 @@ Built for **04-801-W3 Agentic AI: Fundamentals and Applications** at Carnegie Me
 
 ## 📋 Requirements
 
-### HW2 Compliance
-
-| Module | Implementation | Status |
-|--------|---------------|--------|
-| **Retrieval Module** | ChromaDB + Semantic Chunking + Metadata Extraction | ✅ |
-| **Tool-Calling Module** | Weather API + Market Tool + RAG + ReAct Loop | ✅ |
-| **Verification Module** | Claim Extraction + Citation Matching + Groundedness Score | ✅ |
-
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
