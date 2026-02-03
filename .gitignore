@@ -220,6 +220,9 @@ data/chroma/
 data/documents/
 *.pdf
 *.docx
-credentials.json
+credentials.jso
 token.json
 .langsmith/
+
+.DS_Store
+**/.DS_Store
