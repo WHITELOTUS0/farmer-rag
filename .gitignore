@@ -218,7 +218,7 @@ __marimo__/
 # Project-specific
 data/chroma/
 data/documents/
-*.pdf
+
 *.docx
 credentials.jso
 token.json
