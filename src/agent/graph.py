@@ -1,149 +1,24 @@
 """
-LangGraph-based agent orchestration.
-
-Implements the ReAct-style reasoning loop with verification
-for the agricultural advisory agent.
+LangGraph-based agent orchestration using the prebuilt ReAct agent.
 """
 
+import json
 import logging
-from typing import Dict, Any, Optional, Literal
+from typing import Any, Dict, Optional
 
-from langgraph.graph import StateGraph, END
+from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
 
 from src.config.settings import get_settings
-from src.agent.state import AgentState, create_initial_state
-from src.agent.nodes.reasoning import reasoning_node
-from src.agent.nodes.tool_executor import tool_executor_node
-from src.agent.nodes.verifier import verification_node
+from src.tools import (
+    get_market_prices,
+    get_weather_forecast,
+    query_agricultural_knowledge,
+)
+from src.verification.groundedness import VerificationService
 
 logger = logging.getLogger(__name__)
-
-
-def should_continue(state: AgentState) -> Literal["tools", "verify", "end"]:
-    """
-    Determine the next step in the agent graph.
-
-    Args:
-        state: Current agent state
-
-    Returns:
-        Next node to execute
-    """
-    settings = get_settings()
-
-    # Check for errors
-    if state.get("error"):
-        return "end"
-
-    # Check iteration limit
-    if state.get("iteration_count", 0) >= settings.max_tool_calls_per_turn:
-        logger.warning("Max iterations reached, forcing response")
-        return "verify"
-
-    # Check if we have a draft response ready for verification
-    if state.get("draft_response") and not state.get("should_continue", True):
-        return "verify"
-
-    # Check if there's a pending tool call
-    if state.get("_pending_tool"):
-        return "tools"
-
-    # Default: continue reasoning
-    return "end"
-
-
-def route_after_reasoning(state: AgentState) -> Literal["tools", "verify", "end"]:
-    """
-    Route after the reasoning node.
-
-    Args:
-        state: Current agent state
-
-    Returns:
-        Next node to execute
-    """
-    # If there's a pending tool, execute it
-    if "_pending_tool" in state and state["_pending_tool"]:
-        return "tools"
-
-    # If there's a draft response, verify it
-    if state.get("draft_response"):
-        return "verify"
-
-    # If should_continue is False, we're done
-    if not state.get("should_continue", True):
-        return "end"
-
-    return "end"
-
-
-def route_after_tools(state: AgentState) -> Literal["reasoning", "end"]:
-    """
-    Route after tool execution.
-
-    Args:
-        state: Current agent state
-
-    Returns:
-        Next node to execute
-    """
-    settings = get_settings()
-
-    # Check iteration limit
-    if state.get("iteration_count", 0) >= settings.max_tool_calls_per_turn:
-        return "end"
-
-    # Go back to reasoning to process tool results
-    return "reasoning"
-
-
-def build_agent_graph() -> StateGraph:
-    """
-    Build the LangGraph agent graph.
-
-    Graph structure:
-    START -> reasoning -> tools -> reasoning (loop)
-                      -> verify -> END
-
-    Returns:
-        Compiled StateGraph
-    """
-    # Create the graph
-    workflow = StateGraph(AgentState)
-
-    # Add nodes
-    workflow.add_node("reasoning", reasoning_node)
-    workflow.add_node("tools", tool_executor_node)
-    workflow.add_node("verify", verification_node)
-
-    # Set entry point
-    workflow.set_entry_point("reasoning")
-
-    # Add conditional edges from reasoning
-    workflow.add_conditional_edges(
-        "reasoning",
-        route_after_reasoning,
-        {
-            "tools": "tools",
-            "verify": "verify",
-            "end": END,
-        }
-    )
-
-    # Add conditional edges from tools
-    workflow.add_conditional_edges(
-        "tools",
-        route_after_tools,
-        {
-            "reasoning": "reasoning",
-            "end": END,
-        }
-    )
-
-    # Verify always goes to END
-    workflow.add_edge("verify", END)
-
-    return workflow.compile()
 
 
 class FarmerAdvisoryAgent:
@@ -155,9 +30,16 @@ class FarmerAdvisoryAgent:
     """
 
     def __init__(self):
-        """Initialize the agent with the compiled graph."""
-        self.graph = build_agent_graph()
+        """Initialize the agent with LangGraph prebuilt ReAct agent."""
         self.settings = get_settings()
+        self.llm = ChatOpenAI(
+            model=self.settings.primary_model,
+            temperature=self.settings.model_temperature,
+            api_key=self.settings.openai_api_key,
+        )
+        tools = [query_agricultural_knowledge, get_weather_forecast, get_market_prices]
+        self.agent = create_react_agent(self.llm, tools)
+        self.verifier = VerificationService()
 
     def run(
         self,
@@ -176,37 +58,31 @@ class FarmerAdvisoryAgent:
         Returns:
             Dictionary with response and metadata
         """
-        # Create initial state
-        initial_state = create_initial_state(
-            query=query,
-            farmer_context=farmer_context,
-            messages=conversation_history,
-        )
-
-        # Add user message
-        initial_state["messages"] = initial_state.get("messages", []) + [
-            {"role": "user", "content": query}
-        ]
-
         logger.info(f"Running agent for query: {query[:50]}...")
 
         try:
-            # Run the graph
-            final_state = self.graph.invoke(initial_state)
+            messages = []
+            if conversation_history:
+                messages.extend(conversation_history)
+            messages.append(HumanMessage(content=query))
 
-            # Extract results
-            response = final_state.get("final_response") or final_state.get("draft_response", "")
-            verification = final_state.get("verification", {})
+            final_state = self.agent.invoke({"messages": messages})
+            response_message = final_state["messages"][-1]
+            response = response_message.content
+            messages = final_state.get("messages", [])
+            sources = _extract_sources(messages)
+            tools_called = _extract_tools_called(messages)
+            verification = self.verifier.verify(response, sources)
 
             return {
                 "success": True,
                 "response": response,
                 "groundedness_score": verification.get("groundedness_score", 0.0),
                 "is_reliable": verification.get("is_reliable", False),
-                "sources_used": len(final_state.get("retrieved_sources", [])),
-                "tools_called": [tc["tool_name"] for tc in final_state.get("tool_calls", [])],
+                "sources_used": len(sources),
+                "tools_called": tools_called,
                 "verification_details": verification,
-                "messages": final_state.get("messages", []),
+                "messages": messages,
             }
 
         except Exception as e:
@@ -217,7 +93,6 @@ class FarmerAdvisoryAgent:
                 "groundedness_score": 0.0,
                 "is_reliable": False,
                 "sources_used": 0,
-                "tools_called": [],
                 "error": str(e),
             }
 
@@ -227,19 +102,6 @@ class FarmerAdvisoryAgent:
         farmer_context: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[list] = None,
     ) -> Dict[str, Any]:
-        """
-        Async version of run.
-
-        Args:
-            query: The farmer's question
-            farmer_context: Optional context about the farmer
-            conversation_history: Optional previous messages
-
-        Returns:
-            Dictionary with response and metadata
-        """
-        # For now, just wrap sync version
-        # TODO: Implement true async execution
         return self.run(query, farmer_context, conversation_history)
 
 
@@ -268,3 +130,26 @@ def quick_query(query: str, farmer_context: Optional[Dict[str, Any]] = None) -> 
     agent = create_agent()
     result = agent.run(query, farmer_context)
     return result["response"]
+
+
+def _extract_sources(messages: list) -> list:
+    sources = []
+    for msg in messages:
+        if isinstance(msg, ToolMessage) and msg.name == "query_agricultural_knowledge":
+            try:
+                payload = json.loads(msg.content)
+            except Exception:
+                payload = {}
+            if isinstance(payload, dict):
+                for item in payload.get("results", []):
+                    if isinstance(item, dict) and "text" in item:
+                        sources.append(item["text"])
+    return sources
+
+
+def _extract_tools_called(messages: list) -> list:
+    tools = []
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            tools.append(msg.name)
+    return tools

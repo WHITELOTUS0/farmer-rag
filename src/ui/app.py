@@ -7,12 +7,40 @@ a unified interface.
 
 import gradio as gr
 import logging
+import os
+
+from src.config.settings import get_settings
 
 from src.ui.components.chat import create_chat_interface
 from src.ui.components.admin import create_admin_panel
 from src.ui.components.documents import create_document_manager
 
 logger = logging.getLogger(__name__)
+
+
+CUSTOM_CSS = """
+.gradio-container {
+    max-width: 1400px !important;
+}
+.contain {
+    max-width: 1400px !important;
+}
+#header {
+    text-align: center;
+    margin-bottom: 20px;
+}
+.footer {
+    text-align: center;
+    margin-top: 20px;
+    padding: 10px;
+    border-top: 1px solid #e0e0e0;
+}
+"""
+
+THEME = gr.themes.Soft(
+    primary_hue="green",
+    secondary_hue="emerald",
+)
 
 
 def create_app() -> gr.Blocks:
@@ -22,34 +50,8 @@ def create_app() -> gr.Blocks:
     Returns:
         Gradio Blocks application
     """
-    # Custom CSS for better styling
-    custom_css = """
-    .gradio-container {
-        max-width: 1400px !important;
-    }
-    .contain {
-        max-width: 1400px !important;
-    }
-    #header {
-        text-align: center;
-        margin-bottom: 20px;
-    }
-    .footer {
-        text-align: center;
-        margin-top: 20px;
-        padding: 10px;
-        border-top: 1px solid #e0e0e0;
-    }
-    """
 
-    with gr.Blocks(
-        title="Farmer RAG Advisory System",
-        theme=gr.themes.Soft(
-            primary_hue="green",
-            secondary_hue="emerald",
-        ),
-        css=custom_css,
-    ) as app:
+    with gr.Blocks(title="Farmer RAG Advisory System") as app:
         # Header
         gr.Markdown(
             """
@@ -161,6 +163,13 @@ def launch_app(
 
     logger.info("Starting Farmer RAG Advisory System...")
 
+    settings = get_settings()
+    if settings.langchain_tracing_v2 and settings.langchain_api_key:
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
+        os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
+        os.environ["LANGCHAIN_ENDPOINT"] = settings.langchain_endpoint
+
     app = create_app()
 
     app.launch(
@@ -168,6 +177,8 @@ def launch_app(
         server_port=server_port,
         server_name=server_name,
         show_error=debug,
+        theme=THEME,
+        css=CUSTOM_CSS,
     )
 
 

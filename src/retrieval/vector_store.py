@@ -1,16 +1,13 @@
 """
-Vector store implementation using ChromaDB.
-
-Provides persistent storage for document embeddings with
-metadata filtering capabilities for agricultural content.
+Vector store implementation using LangChain's Chroma wrapper.
 """
 
 import logging
-from typing import List, Optional, Dict, Any
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
 
 from src.config.settings import get_settings
 from src.retrieval.embeddings import EmbeddingService
@@ -19,14 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class VectorStore:
-    """
-    ChromaDB-based vector store for agricultural document retrieval.
-
-    Supports:
-    - Persistent storage for production use
-    - Metadata filtering by crop type, topic, growth stage
-    - Efficient similarity search with configurable top-k
-    """
+    """Chroma vector store wrapper with metadata filtering."""
 
     def __init__(
         self,
@@ -34,43 +24,23 @@ class VectorStore:
         persist_directory: str | None = None,
         embedding_service: EmbeddingService | None = None,
     ):
-        """
-        Initialize the vector store.
-
-        Args:
-            collection_name: Name of the ChromaDB collection
-            persist_directory: Directory for persistent storage
-            embedding_service: Service for generating embeddings
-        """
         settings = get_settings()
         self.collection_name = collection_name or settings.chroma_collection_name
         self.persist_directory = persist_directory or settings.chroma_persist_directory
-
-        # Ensure persist directory exists
         Path(self.persist_directory).mkdir(parents=True, exist_ok=True)
 
-        # Initialize embedding service
         self.embedding_service = embedding_service or EmbeddingService()
 
-        # Initialize ChromaDB client with persistence
-        self.client = chromadb.PersistentClient(
-            path=self.persist_directory,
-            settings=ChromaSettings(
-                anonymized_telemetry=False,
-                allow_reset=True,
-            ),
-        )
-
-        # Get or create collection
-        self.collection = self.client.get_or_create_collection(
-            name=self.collection_name,
-            metadata={"hnsw:space": "cosine"},  # Use cosine similarity
+        self.store = Chroma(
+            collection_name=self.collection_name,
+            persist_directory=self.persist_directory,
+            embedding_function=self.embedding_service.embeddings,
         )
 
         logger.info(
-            f"Initialized vector store: collection='{self.collection_name}', "
-            f"persist_directory='{self.persist_directory}', "
-            f"document_count={self.collection.count()}"
+            "Initialized vector store: collection='%s', persist_directory='%s'",
+            self.collection_name,
+            self.persist_directory,
         )
 
     def add_documents(
@@ -79,47 +49,18 @@ class VectorStore:
         metadatas: List[Dict[str, Any]],
         ids: List[str],
     ) -> None:
-        """
-        Add documents to the vector store.
-
-        Args:
-            texts: List of document texts (chunks)
-            metadatas: List of metadata dicts for each document
-            ids: List of unique IDs for each document
-        """
         if not texts:
             logger.warning("No texts provided to add_documents")
             return
 
-        # Generate embeddings
-        logger.info(f"Generating embeddings for {len(texts)} documents...")
-        embeddings = self.embedding_service.embed_texts(texts)
-
-        # Clean metadata - ChromaDB only accepts str, int, float, bool
-        cleaned_metadatas = []
-        for metadata in metadatas:
-            cleaned = {}
-            for key, value in metadata.items():
-                if isinstance(value, (str, int, float, bool)):
-                    cleaned[key] = value
-                elif isinstance(value, list):
-                    # Convert lists to comma-separated strings
-                    cleaned[key] = ",".join(str(v) for v in value)
-                elif value is None:
-                    cleaned[key] = ""
-                else:
-                    cleaned[key] = str(value)
-            cleaned_metadatas.append(cleaned)
-
-        # Add to collection
-        self.collection.add(
-            embeddings=embeddings,
-            documents=texts,
-            metadatas=cleaned_metadatas,
-            ids=ids,
-        )
-
-        logger.info(f"Added {len(texts)} documents to vector store")
+        documents = [
+            Document(page_content=text, metadata=metadata)
+            for text, metadata in zip(texts, metadatas)
+        ]
+        self.store.add_documents(documents=documents, ids=ids)
+        if hasattr(self.store, "persist"):
+            self.store.persist()
+        logger.info("Added %s documents to vector store", len(texts))
 
     def search(
         self,
@@ -127,47 +68,56 @@ class VectorStore:
         top_k: int = 5,
         filter_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        Search for similar documents.
+        where = self._build_where_clause(filter_metadata) if filter_metadata else None
 
-        Args:
-            query: Search query text
-            top_k: Number of results to return
-            filter_metadata: Optional metadata filters
+        formatted_results: List[Dict[str, Any]] = []
+        try:
+            results = self.store.similarity_search_with_relevance_scores(
+                query=query,
+                k=top_k,
+                filter=where,
+            )
+            for doc, score in results:
+                formatted_results.append(
+                    {
+                        "text": doc.page_content,
+                        "metadata": doc.metadata or {},
+                        "similarity_score": score,
+                        "id": doc.metadata.get("id"),
+                    }
+                )
+        except Exception:
+            results = self.store.similarity_search_with_score(
+                query=query,
+                k=top_k,
+                filter=where,
+            )
+            for doc, score in results:
+                similarity = 1 / (1 + score) if score > 1 else 1 - score
+                formatted_results.append(
+                    {
+                        "text": doc.page_content,
+                        "metadata": doc.metadata or {},
+                        "similarity_score": similarity,
+                        "id": doc.metadata.get("id"),
+                    }
+                )
 
-        Returns:
-            List of results with text, metadata, and similarity score
-        """
-        # Generate query embedding
-        query_embedding = self.embedding_service.embed_query(query)
-
-        # Build where clause for filtering
-        where = None
-        if filter_metadata:
-            where = self._build_where_clause(filter_metadata)
-
-        # Execute search
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
-
-        # Format results
-        formatted_results = []
-        if results["documents"] and results["documents"][0]:
-            for i, doc in enumerate(results["documents"][0]):
-                # Convert distance to similarity score (cosine distance to similarity)
-                distance = results["distances"][0][i] if results["distances"] else 0
-                similarity = 1 - distance  # Cosine similarity = 1 - cosine distance
-
-                formatted_results.append({
-                    "text": doc,
-                    "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                    "similarity_score": similarity,
-                    "id": results["ids"][0][i] if results["ids"] else None,
-                })
+        if not formatted_results:
+            results = self.store.similarity_search(
+                query=query,
+                k=top_k,
+                filter=where,
+            )
+            for doc in results:
+                formatted_results.append(
+                    {
+                        "text": doc.page_content,
+                        "metadata": doc.metadata or {},
+                        "similarity_score": 0.0,
+                        "id": doc.metadata.get("id"),
+                    }
+                )
 
         return formatted_results
 
@@ -199,17 +149,15 @@ class VectorStore:
 
         # Build filter for crop types
         if crop_types:
-            # ChromaDB uses $contains for string matching
-            # Since we store crop_types as comma-separated string
-            filters["crop_types"] = {"$contains": crop_types[0]}
+            filters["crop_types"] = {"$eq": crop_types[0]}
 
         # Build filter for topics
         if topics:
-            filters["topics"] = {"$contains": topics[0]}
+            filters["topics"] = {"$eq": topics[0]}
 
         # Build filter for growth stages
         if growth_stages:
-            filters["growth_stages"] = {"$contains": growth_stages[0]}
+            filters["growth_stages"] = {"$eq": growth_stages[0]}
 
         return self.search(query, top_k=top_k, filter_metadata=filters if filters else None)
 
@@ -256,16 +204,12 @@ class VectorStore:
             Number of documents deleted
         """
         # Get IDs of documents with this source
-        results = self.collection.get(
-            where={"source_id": source_id},
-            include=[],
-        )
-
-        if results["ids"]:
-            self.collection.delete(ids=results["ids"])
-            logger.info(f"Deleted {len(results['ids'])} chunks from source: {source_id}")
-            return len(results["ids"])
-
+        results = self.store.get(where={"source_id": source_id}, include=[])
+        ids = results.get("ids") if results else None
+        if ids:
+            self.store.delete(ids=ids)
+            logger.info("Deleted %s chunks from source: %s", len(ids), source_id)
+            return len(ids)
         return 0
 
     def delete_by_ids(self, ids: List[str]) -> None:
@@ -276,8 +220,8 @@ class VectorStore:
             ids: List of document IDs to delete
         """
         if ids:
-            self.collection.delete(ids=ids)
-            logger.info(f"Deleted {len(ids)} documents from vector store")
+            self.store.delete(ids=ids)
+            logger.info("Deleted %s documents from vector store", len(ids))
 
     def get_collection_stats(self) -> Dict[str, Any]:
         """
@@ -286,23 +230,18 @@ class VectorStore:
         Returns:
             Dictionary with collection statistics
         """
-        count = self.collection.count()
-
-        # Sample some documents to get metadata distribution
-        sample = self.collection.peek(limit=min(100, count))
-
-        # Count unique sources
+        count = self.store._collection.count()
+        sample = self.store._collection.peek(limit=min(100, count))
         sources = set()
         crop_types = set()
-        if sample["metadatas"]:
+        if sample.get("metadatas"):
             for metadata in sample["metadatas"]:
                 if "source_id" in metadata:
                     sources.add(metadata["source_id"])
                 if "crop_types" in metadata:
-                    for ct in metadata["crop_types"].split(","):
+                    for ct in str(metadata["crop_types"]).split(","):
                         if ct:
                             crop_types.add(ct.strip())
-
         return {
             "total_documents": count,
             "collection_name": self.collection_name,
@@ -316,9 +255,10 @@ class VectorStore:
 
         WARNING: This will delete all data in the collection.
         """
-        self.client.delete_collection(self.collection_name)
-        self.collection = self.client.create_collection(
-            name=self.collection_name,
-            metadata={"hnsw:space": "cosine"},
+        self.store.delete_collection()
+        self.store = Chroma(
+            collection_name=self.collection_name,
+            persist_directory=self.persist_directory,
+            embedding_function=self.embedding_service.embeddings,
         )
-        logger.warning(f"Reset collection: {self.collection_name}")
+        logger.warning("Reset collection: %s", self.collection_name)

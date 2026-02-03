@@ -3,8 +3,9 @@ Chat interface component for farmer interactions.
 """
 
 import gradio as gr
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Generator
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +23,15 @@ def get_agent():
     return _agent
 
 
-def chat_response(
+def stream_chat_response(
     message: str,
-    history: List[Tuple[str, str]],
+    history: Optional[List[Dict[str, str]]],
     farmer_name: str,
     farmer_region: str,
     farmer_lat: float,
     farmer_lon: float,
     crop_types: List[str],
-) -> Tuple[str, List[Tuple[str, str]]]:
+) -> Generator[Tuple[str, List[Dict[str, str]], Dict[str, Any]], None, None]:
     """
     Process a chat message and return response.
 
@@ -44,10 +45,18 @@ def chat_response(
         crop_types: List of crops being grown
 
     Returns:
-        Tuple of (response, updated_history)
+        Generator yielding (cleared_input, updated_history, stats)
     """
+    if history is None:
+        history = []
+
     if not message.strip():
-        return "", history
+        yield "", history, {
+            "groundedness_score": "N/A",
+            "sources_used": 0,
+            "tools_called": [],
+        }
+        return
 
     # Build farmer context
     farmer_context = {
@@ -75,9 +84,11 @@ def chat_response(
 
         # Convert history to messages format
         conversation_history = []
-        for user_msg, assistant_msg in history:
-            conversation_history.append({"role": "user", "content": user_msg})
-            conversation_history.append({"role": "assistant", "content": assistant_msg})
+        for msg in history:
+            role = msg.get("role")
+            content = msg.get("content")
+            if role in {"user", "assistant"} and content:
+                conversation_history.append({"role": role, "content": content})
 
         # Run agent
         result = agent.run(
@@ -87,20 +98,29 @@ def chat_response(
         )
 
         response = result["response"]
-
-        # Add metadata to response
-        if result.get("tools_called"):
-            tools_str = ", ".join(result["tools_called"])
-            response += f"\n\n*Tools used: {tools_str}*"
+        tools_called = result.get("tools_called") or []
+        groundedness_score = result.get("groundedness_score", "N/A")
+        sources_used = result.get("sources_used", 0)
 
     except Exception as e:
         logger.error(f"Chat error: {e}")
         response = f"I apologize, but I encountered an error: {str(e)}"
+        tools_called = []
+        groundedness_score = "N/A"
+        sources_used = 0
 
-    # Update history
-    history = history + [(message, response)]
-
-    return "", history
+    # Stream the assistant response in chunks
+    history = history + [{"role": "user", "content": message}]
+    chunk_size = 40
+    for i in range(0, len(response), chunk_size):
+        assistant_message = response[: i + chunk_size]
+        interim_history = history + [{"role": "assistant", "content": assistant_message}]
+        yield "", interim_history, {
+            "groundedness_score": groundedness_score,
+            "sources_used": sources_used,
+            "tools_called": tools_called,
+        }
+        time.sleep(0.02)
 
 
 def create_chat_interface() -> gr.Blocks:
@@ -123,7 +143,6 @@ def create_chat_interface() -> gr.Blocks:
                 chatbot = gr.Chatbot(
                     label="Conversation",
                     height=500,
-                    show_copy_button=True,
                 )
 
                 with gr.Row():
@@ -202,16 +221,7 @@ def create_chat_interface() -> gr.Blocks:
 
         # Event handlers
         def submit_message(message, history, name, region, lat, lon, crops):
-            response_text, new_history = chat_response(
-                message, history, name, region, lat, lon, crops
-            )
-            # Extract stats from last response
-            stats = {
-                "groundedness_score": "See response",
-                "sources_used": "See response",
-                "tools_called": "See response",
-            }
-            return response_text, new_history, stats
+            yield from stream_chat_response(message, history, name, region, lat, lon, crops)
 
         send_btn.click(
             submit_message,

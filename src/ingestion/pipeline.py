@@ -1,76 +1,54 @@
 """
-Document ingestion pipeline.
-
-Orchestrates the complete flow from document loading to vector storage:
-1. Load documents from various sources
-2. Chunk documents semantically
-3. Extract metadata
-4. Generate embeddings
-5. Store in vector database
+Document ingestion pipeline using LangChain loaders and splitters.
 """
 
+import hashlib
 import logging
 import uuid
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
+
+from langchain_community.document_loaders import (
+    Docx2txtLoader,
+    PyPDFLoader,
+    TextLoader,
+    UnstructuredFileLoader,
+)
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_experimental.text_splitter import SemanticChunker
 
 from src.config.settings import get_settings
-from src.ingestion.loaders.base import BaseLoader, LoadedDocument
-from src.ingestion.loaders.pdf import PDFLoader
-from src.ingestion.loaders.docx import DocxLoader
-from src.retrieval.chunking.semantic import SemanticChunker
-from src.retrieval.chunking.metadata_extractor import MetadataExtractor
-from src.retrieval.chunking.base import Chunk
 from src.retrieval.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
 
 class IngestionPipeline:
-    """
-    Complete document ingestion pipeline.
+    """End-to-end ingestion using LangChain primitives."""
 
-    Handles the full flow from raw documents to searchable vectors,
-    with proper error handling and logging for each stage.
-    """
-
-    # Map file extensions to loaders
     LOADER_MAP = {
-        ".pdf": PDFLoader,
-        ".docx": DocxLoader,
+        ".pdf": [PyPDFLoader],
+        ".docx": [Docx2txtLoader, UnstructuredFileLoader],
+        ".txt": [TextLoader],
     }
 
     def __init__(
         self,
         vector_store: Optional[VectorStore] = None,
-        chunker: Optional[SemanticChunker] = None,
-        metadata_extractor: Optional[MetadataExtractor] = None,
-        use_llm_for_metadata: bool = True,
+        splitter: Optional[object] = None,
     ):
-        """
-        Initialize the ingestion pipeline.
-
-        Args:
-            vector_store: Vector store instance
-            chunker: Document chunker instance
-            metadata_extractor: Metadata extraction instance
-            use_llm_for_metadata: Whether to use LLM for metadata extraction
-        """
         settings = get_settings()
-
         self.vector_store = vector_store or VectorStore()
-        self.chunker = chunker or SemanticChunker(
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
-        )
-        self.metadata_extractor = metadata_extractor or MetadataExtractor(
-            use_llm=use_llm_for_metadata
-        )
-
-        # Initialize loaders
-        self.loaders: Dict[str, BaseLoader] = {}
-        for ext, loader_class in self.LOADER_MAP.items():
-            self.loaders[ext] = loader_class()
+        if splitter is not None:
+            self.splitter = splitter
+        else:
+            # Semantic chunking (preferred for HW2 advanced chunking)
+            self.splitter = SemanticChunker(
+                self.vector_store.embedding_service.embeddings,
+                breakpoint_threshold_type="percentile",
+                breakpoint_threshold_amount=0.8,
+            )
 
     def ingest_file(
         self,
@@ -78,74 +56,54 @@ class IngestionPipeline:
         source_url: Optional[str] = None,
         additional_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Ingest a single file into the vector store.
-
-        Args:
-            file_path: Path to the document file
-            source_url: Optional URL where document came from
-            additional_metadata: Extra metadata to attach to all chunks
-
-        Returns:
-            Dictionary with ingestion results:
-            - success: bool
-            - document: LoadedDocument info
-            - chunk_count: number of chunks created
-            - error: error message if failed
-        """
         path = Path(file_path)
-        logger.info(f"Starting ingestion of: {path.name}")
+        logger.info("Starting ingestion of: %s", path.name)
 
         try:
-            # Step 1: Load the document
-            document = self._load_document(file_path)
-            logger.info(f"Loaded document: {document.filename} "
-                       f"({document.file_size} bytes, {len(document.content)} chars)")
+            documents = self._load_documents(file_path)
+            if not documents:
+                return {
+                    "success": False,
+                    "document": {"filename": path.name, "file_path": str(path)},
+                    "chunk_count": 0,
+                    "error": "No documents loaded - file may be empty",
+                }
 
-            # Check if already ingested
-            existing_chunks = self._check_existing(document.source_id)
-            if existing_chunks > 0:
-                logger.info(f"Document already ingested ({existing_chunks} chunks). "
-                           "Deleting existing chunks for re-ingestion...")
-                self.vector_store.delete_by_source(document.source_id)
+            source_id = self._build_source_id(path)
+            for doc in documents:
+                doc.metadata.update(
+                    {
+                        "source_id": source_id,
+                        "source_name": path.name,
+                        "source_url": source_url or "",
+                        **(additional_metadata or {}),
+                    }
+                )
 
-            # Step 2: Chunk the document
-            base_metadata = {
-                "source_url": source_url or "",
-                **(additional_metadata or {}),
-            }
-            chunks = self.chunker.chunk_text(
-                text=document.content,
-                source_id=document.source_id,
-                source_name=document.filename,
-                base_metadata=base_metadata,
-            )
-            logger.info(f"Created {len(chunks)} chunks")
+            if self._check_existing(source_id) > 0:
+                logger.info("Re-ingesting %s; clearing prior chunks", source_id)
+                self.vector_store.delete_by_source(source_id)
 
+            chunks = self.splitter.split_documents(documents)
             if not chunks:
                 return {
                     "success": False,
-                    "document": document.to_dict(),
+                    "document": {"filename": path.name, "file_path": str(path)},
                     "chunk_count": 0,
                     "error": "No chunks created - document may be empty",
                 }
 
-            # Step 3: Extract metadata for each chunk
-            enriched_chunks = self.metadata_extractor.enrich_chunks(chunks)
-            logger.info("Metadata extraction complete")
-
-            # Step 4: Add to vector store
-            self._add_chunks_to_vector_store(enriched_chunks)
+            self._add_documents_to_vector_store(chunks, source_id)
 
             return {
                 "success": True,
-                "document": document.to_dict(),
+                "document": {"filename": path.name, "file_path": str(path), "source_id": source_id},
                 "chunk_count": len(chunks),
                 "error": None,
             }
 
         except Exception as e:
-            logger.error(f"Ingestion failed for {file_path}: {e}")
+            logger.error("Ingestion failed for %s: %s", file_path, e)
             return {
                 "success": False,
                 "document": {"filename": path.name, "file_path": str(path)},
@@ -213,37 +171,18 @@ class IngestionPipeline:
         source_id: Optional[str] = None,
         additional_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Ingest raw text content directly.
-
-        Useful for programmatic ingestion without files.
-
-        Args:
-            text: The text content to ingest
-            source_name: Name to identify this source
-            source_id: Optional custom source ID
-            additional_metadata: Extra metadata to attach
-
-        Returns:
-            Dictionary with ingestion results
-        """
         source_id = source_id or f"text_{uuid.uuid4().hex[:12]}"
-        logger.info(f"Ingesting text: {source_name}")
+        logger.info("Ingesting text: %s", source_name)
 
         try:
-            # Check existing
-            existing = self._check_existing(source_id)
-            if existing > 0:
+            if self._check_existing(source_id) > 0:
                 self.vector_store.delete_by_source(source_id)
 
-            # Chunk
-            chunks = self.chunker.chunk_text(
-                text=text,
-                source_id=source_id,
-                source_name=source_name,
-                base_metadata=additional_metadata,
+            doc = Document(
+                page_content=text,
+                metadata={"source_id": source_id, "source_name": source_name, **(additional_metadata or {})},
             )
-
+            chunks = self.splitter.split_documents([doc])
             if not chunks:
                 return {
                     "success": False,
@@ -252,10 +191,7 @@ class IngestionPipeline:
                     "error": "No chunks created",
                 }
 
-            # Enrich and store
-            enriched_chunks = self.metadata_extractor.enrich_chunks(chunks)
-            self._add_chunks_to_vector_store(enriched_chunks)
-
+            self._add_documents_to_vector_store(chunks, source_id)
             return {
                 "success": True,
                 "source_id": source_id,
@@ -263,9 +199,8 @@ class IngestionPipeline:
                 "chunk_count": len(chunks),
                 "error": None,
             }
-
         except Exception as e:
-            logger.error(f"Text ingestion failed: {e}")
+            logger.error("Text ingestion failed: %s", e)
             return {
                 "success": False,
                 "source_id": source_id,
@@ -273,30 +208,23 @@ class IngestionPipeline:
                 "error": str(e),
             }
 
-    def _load_document(self, file_path: str) -> LoadedDocument:
-        """
-        Load a document using the appropriate loader.
-
-        Args:
-            file_path: Path to the document
-
-        Returns:
-            LoadedDocument instance
-
-        Raises:
-            ValueError: If file type is not supported
-        """
+    def _load_documents(self, file_path: str) -> List[Document]:
         path = Path(file_path)
         ext = path.suffix.lower()
+        if ext not in self.LOADER_MAP:
+            supported = ", ".join(self.LOADER_MAP.keys())
+            raise ValueError(f"Unsupported file type: {ext}. Supported: {supported}")
 
-        if ext not in self.loaders:
-            supported = ", ".join(self.loaders.keys())
-            raise ValueError(
-                f"Unsupported file type: {ext}. Supported: {supported}"
-            )
-
-        loader = self.loaders[ext]
-        return loader.load(file_path)
+        loader_classes = self.LOADER_MAP[ext]
+        last_error = None
+        for loader_cls in loader_classes:
+            try:
+                loader = loader_cls(str(path))
+                return loader.load()
+            except Exception as e:
+                last_error = e
+                logger.warning("Loader %s failed for %s: %s", loader_cls.__name__, path.name, e)
+        raise RuntimeError(f"All loaders failed for {path.name}: {last_error}")
 
     def _check_existing(self, source_id: str) -> int:
         """
@@ -308,28 +236,15 @@ class IngestionPipeline:
         Returns:
             Number of existing chunks from this source
         """
-        results = self.vector_store.collection.get(
-            where={"source_id": source_id},
-            include=[],
-        )
-        return len(results["ids"]) if results["ids"] else 0
+        results = self.vector_store.store.get(where={"source_id": source_id}, include=[])
+        ids = results.get("ids") if results else None
+        return len(ids) if ids else 0
 
-    def _add_chunks_to_vector_store(self, chunks: List[Chunk]) -> None:
-        """
-        Add chunks to the vector store.
-
-        Args:
-            chunks: List of enriched chunks to add
-        """
-        texts = [chunk.text for chunk in chunks]
-        metadatas = [chunk.metadata for chunk in chunks]
-        ids = [chunk.id for chunk in chunks]
-
-        self.vector_store.add_documents(
-            texts=texts,
-            metadatas=metadatas,
-            ids=ids,
-        )
+    def _add_documents_to_vector_store(self, docs: List[Document], source_id: str) -> None:
+        texts = [doc.page_content for doc in docs]
+        metadatas = [doc.metadata for doc in docs]
+        ids = [f"{source_id}_{i}" for i in range(len(docs))]
+        self.vector_store.add_documents(texts=texts, metadatas=metadatas, ids=ids)
 
     def get_supported_extensions(self) -> List[str]:
         """Get list of supported file extensions."""
@@ -343,3 +258,11 @@ class IngestionPipeline:
             Dictionary with vector store statistics
         """
         return self.vector_store.get_collection_stats()
+
+    @staticmethod
+    def _build_source_id(path: Path) -> str:
+        sha256_hash = hashlib.sha256()
+        with open(path, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return f"{path.suffix.lstrip('.')}_{sha256_hash.hexdigest()[:12]}"

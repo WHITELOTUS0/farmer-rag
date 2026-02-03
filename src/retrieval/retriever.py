@@ -114,21 +114,37 @@ class Retriever:
             crop_types=crop_types,
             topics=topics,
             growth_stages=growth_stages,
-            top_k=effective_top_k * 2,  # Get extra for filtering
+            top_k=effective_top_k * 2,
         )
+        if not raw_results and (crop_types or topics or growth_stages):
+            logger.info("No filtered results; retrying without filters.")
+            raw_results = self.vector_store.search(
+                query=query,
+                top_k=effective_top_k * 2,
+            )
 
-        # Convert to RetrievalResult objects and filter by confidence
+        # Convert to RetrievalResult objects
+        all_results = []
         results = []
         for raw in raw_results:
+            result = RetrievalResult(
+                text=raw["text"],
+                source_id=raw["metadata"].get("source_id", "unknown"),
+                source_name=raw["metadata"].get("source_name", "Unknown Source"),
+                similarity_score=raw["similarity_score"],
+                metadata=raw["metadata"],
+            )
+            all_results.append(result)
             if raw["similarity_score"] >= effective_threshold:
-                result = RetrievalResult(
-                    text=raw["text"],
-                    source_id=raw["metadata"].get("source_id", "unknown"),
-                    source_name=raw["metadata"].get("source_name", "Unknown Source"),
-                    similarity_score=raw["similarity_score"],
-                    metadata=raw["metadata"],
-                )
                 results.append(result)
+
+        # Fallback: if threshold filters out everything, return best matches anyway
+        if not results and all_results:
+            logger.warning(
+                "No results above threshold %.2f; returning best matches instead.",
+                effective_threshold,
+            )
+            results = all_results
 
         # Deduplicate by source (keep highest scoring chunk per source)
         deduplicated = self._deduplicate_by_source(results)
