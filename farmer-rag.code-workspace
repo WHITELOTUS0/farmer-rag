@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../farmer_rag_frontend"
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"*.dbclient-js": "javascript",
+			"*.embeddedhtml": "html",
+			"plyconfig.json": "jsonc"
+		}
+	}
+}

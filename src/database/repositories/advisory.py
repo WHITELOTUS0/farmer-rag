@@ -29,7 +29,7 @@ class AdvisoryRepository:
 
     async def create_advisory(
         self,
-        farmer_id: uuid.UUID,
+        user_id: uuid.UUID,
         query: str,
         response: str,
         groundedness_score: float,
@@ -43,8 +43,8 @@ class AdvisoryRepository:
         Create a new advisory record.
 
         Args:
-            farmer_id: UUID of the farmer who received the advisory
-            query: The farmer's original question
+            user_id: UUID of the user who received the advisory
+            query: The user's original question
             response: The generated advisory response
             groundedness_score: Verification score (0-1)
             model_used: Name of the LLM model used
@@ -57,7 +57,7 @@ class AdvisoryRepository:
             Advisory: Created advisory instance
         """
         advisory = Advisory(
-            farmer_id=farmer_id,
+            user_id=user_id,
             query=query,
             response=response,
             groundedness_score=groundedness_score,
@@ -88,17 +88,17 @@ class AdvisoryRepository:
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
-    async def get_farmer_advisories(
+    async def get_user_advisories(
         self,
-        farmer_id: uuid.UUID,
+        user_id: uuid.UUID,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Advisory]:
         """
-        Get all advisories for a specific farmer.
+        Get all advisories for a specific user.
 
         Args:
-            farmer_id: UUID of the farmer
+            user_id: UUID of the user
             limit: Maximum number of advisories to return
             offset: Number of advisories to skip
 
@@ -107,7 +107,7 @@ class AdvisoryRepository:
         """
         query = (
             select(Advisory)
-            .where(Advisory.farmer_id == farmer_id)
+            .where(Advisory.user_id == user_id)
             .order_by(Advisory.created_at.desc())
             .limit(limit)
             .offset(offset)
@@ -117,16 +117,16 @@ class AdvisoryRepository:
 
     async def get_recent_advisories(
         self,
-        farmer_id: uuid.UUID,
+        user_id: uuid.UUID,
         hours: int = 24,
     ) -> List[Advisory]:
         """
-        Get advisories from the last N hours for a farmer.
+        Get advisories from the last N hours for a user.
 
         Useful for providing context about recent interactions.
 
         Args:
-            farmer_id: UUID of the farmer
+            user_id: UUID of the user
             hours: Number of hours to look back
 
         Returns:
@@ -136,7 +136,7 @@ class AdvisoryRepository:
         query = (
             select(Advisory)
             .where(
-                Advisory.farmer_id == farmer_id,
+                Advisory.user_id == user_id,
                 Advisory.created_at >= cutoff,
             )
             .order_by(Advisory.created_at.desc())

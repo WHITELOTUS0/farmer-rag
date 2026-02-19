@@ -8,12 +8,15 @@ This module provides:
 """
 
 import logging
+import ssl
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.engine import make_url
+import certifi
 
 from src.config.settings import get_settings
 from src.database.models import Base
@@ -23,14 +26,44 @@ logger = logging.getLogger(__name__)
 # Get settings
 settings = get_settings()
 
+def _build_ssl_context(sslmode: str) -> ssl.SSLContext | None:
+    if sslmode == "disable":
+        return None
+
+    if sslmode in {"require", "allow", "prefer"}:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
+
+    context = ssl.create_default_context(cafile=certifi.where())
+    context.check_hostname = sslmode != "verify-ca"
+    context.verify_mode = ssl.CERT_REQUIRED
+    return context
+
+
+def _build_async_engine():
+    url = make_url(settings.database_url)
+    connect_args = {}
+
+    if "sslmode" in url.query:
+        sslmode = url.query.get("sslmode")
+        url = url.set(query={k: v for k, v in url.query.items() if k != "sslmode"})
+        if sslmode:
+            connect_args["ssl"] = _build_ssl_context(sslmode)
+
+    return create_async_engine(
+        url,
+        echo=settings.is_development,  # Log SQL in development
+        pool_pre_ping=True,  # Verify connections before use
+        pool_size=5,
+        max_overflow=10,
+        connect_args=connect_args or None,
+    )
+
+
 # Create async engine for runtime operations
-async_engine = create_async_engine(
-    settings.database_url,
-    echo=settings.is_development,  # Log SQL in development
-    pool_pre_ping=True,  # Verify connections before use
-    pool_size=5,
-    max_overflow=10,
-)
+async_engine = _build_async_engine()
 
 # Create sync engine for migrations and scripts
 sync_engine = create_engine(

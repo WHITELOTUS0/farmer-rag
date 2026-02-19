@@ -13,7 +13,7 @@ from typing import List, Optional, Dict, Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
@@ -58,11 +58,85 @@ class GoogleDriveConnector:
         self.creds = None
         self.service = None
 
+    def get_authorization_url(self, redirect_uri: str) -> Optional[str]:
+        """
+        Generate OAuth authorization URL for web-based authentication.
+
+        Args:
+            redirect_uri: The redirect URI registered in Google Cloud Console
+
+        Returns:
+            Authorization URL, or None if failed
+        """
+        try:
+            if not os.path.exists(self.credentials_path):
+                logger.error(
+                    f"Credentials file not found: {self.credentials_path}. "
+                    "Download OAuth credentials from Google Cloud Console."
+                )
+                return None
+
+            flow = Flow.from_client_secrets_file(
+                self.credentials_path,
+                scopes=SCOPES,
+                redirect_uri=redirect_uri,
+            )
+            authorization_url, _ = flow.authorization_url(
+                access_type="offline",
+                include_granted_scopes="true",
+                prompt="consent",
+            )
+            return authorization_url
+        except Exception as e:
+            logger.error(f"Failed to generate authorization URL: {e}")
+            return None
+
+    def exchange_code_for_token(self, code: str, redirect_uri: str) -> bool:
+        """
+        Exchange authorization code for access token.
+
+        Args:
+            code: Authorization code from OAuth callback
+            redirect_uri: The redirect URI used in authorization
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not os.path.exists(self.credentials_path):
+                logger.error(
+                    f"Credentials file not found: {self.credentials_path}. "
+                    "Download OAuth credentials from Google Cloud Console."
+                )
+                return False
+
+            flow = Flow.from_client_secrets_file(
+                self.credentials_path,
+                scopes=SCOPES,
+                redirect_uri=redirect_uri,
+            )
+            flow.fetch_token(code=code)
+            self.creds = flow.credentials
+
+            # Save the token
+            with open(self.token_path, "w") as token:
+                token.write(self.creds.to_json())
+
+            # Build the service
+            self.service = build("drive", "v3", credentials=self.creds)
+            logger.info("Google Drive authentication successful")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to exchange code for token: {e}")
+            return False
+
     def authenticate(self) -> bool:
         """
         Authenticate with Google Drive API.
 
         Will prompt for browser authentication if no valid token exists.
+        Uses local server flow for desktop/CLI use.
 
         Returns:
             True if authentication successful, False otherwise

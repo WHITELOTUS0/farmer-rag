@@ -175,7 +175,7 @@ class DocumentRepository:
             update_values["error_message"] = error_message
 
         if metadata is not None:
-            update_values["metadata"] = metadata
+            update_values["extra_metadata"] = metadata
 
         stmt = (
             update(Document)

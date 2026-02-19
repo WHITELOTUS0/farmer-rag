@@ -6,11 +6,24 @@ import logging
 from typing import List, Optional
 
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
 
 API_URL = "https://api.open-meteo.com/v1/forecast"
+
+
+@retry(
+    retry=retry_if_exception_type(httpx.HTTPError),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    stop=stop_after_attempt(3),
+)
+def _fetch_weather(params: dict) -> dict:
+    with httpx.Client(timeout=30) as client:
+        response = client.get(API_URL, params=params)
+        response.raise_for_status()
+        return response.json()
 
 
 @tool("get_weather_forecast")
@@ -45,10 +58,7 @@ def get_weather_forecast(latitude: float, longitude: float, days: int = 7) -> di
     }
 
     try:
-        with httpx.Client(timeout=30) as client:
-            response = client.get(API_URL, params=params)
-            response.raise_for_status()
-            data = response.json()
+        data = _fetch_weather(params)
     except httpx.HTTPError as e:
         logger.error("Weather API request failed: %s", e)
         return {"error": f"Weather API request failed: {str(e)}"}

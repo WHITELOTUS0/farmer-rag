@@ -44,7 +44,7 @@ def verification_node(state: AgentState) -> Dict[str, Any]:
 
     draft_response = state.get("draft_response")
     if not draft_response:
-        logger.warning("No draft response to verify")
+        logger.warning("No draft response to verify - ending execution")
         return {
             "final_response": "I apologize, but I couldn't generate a response. Please try again.",
             "verification": {
@@ -53,18 +53,19 @@ def verification_node(state: AgentState) -> Dict[str, Any]:
                 "is_reliable": False,
                 "suggestion": "No response generated",
             },
+            "should_continue": False,  # Explicitly stop the loop
         }
 
-    # Get sources for verification
-    retrieved_sources = state.get("retrieved_sources", [])
-    tool_calls = state.get("tool_calls", [])
+    # Get sources for verification (defensive: .get(k, []) returns None if key exists with None)
+    retrieved_sources = state.get("retrieved_sources") or []
+    tool_calls = state.get("tool_calls") or []
 
     # Build source context for verification
     sources_text = _format_sources_for_verification(retrieved_sources, tool_calls)
 
     try:
         # Step 1: Extract claims
-        claims = _extract_claims(client, draft_response, settings.verification_model)
+        claims = _extract_claims(client, draft_response, settings.verification_model) or []
         logger.info(f"Extracted {len(claims)} claims from response")
 
         if not claims:
@@ -85,7 +86,7 @@ def verification_node(state: AgentState) -> Dict[str, Any]:
             claims,
             sources_text,
             settings.verification_model,
-        )
+        ) or []
 
         # Step 3: Calculate groundedness score
         supported_count = sum(1 for c in verified_claims if c.get("supported", False))
@@ -251,11 +252,13 @@ Respond with a JSON array:
                 content = content[4:]
 
         verifications = json.loads(content)
+        if not isinstance(verifications, list):
+            verifications = []
 
         # Merge verification results with original claims
         for i, claim in enumerate(claims):
             verification = next(
-                (v for v in verifications if v.get("claim_number") == i + 1),
+                (v for v in verifications if isinstance(v, dict) and v.get("claim_number") == i + 1),
                 {"supported": False, "explanation": "Verification missing"}
             )
             verified.append({
@@ -291,20 +294,24 @@ def _format_sources_for_verification(
     """
     parts = []
 
-    # Add retrieved documents
-    if retrieved_sources:
-        parts.append("### Knowledge Base Sources:")
-        for i, source in enumerate(retrieved_sources[:5], 1):  # Limit to top 5
-            parts.append(f"\n[Source {i}: {source.get('source', 'Unknown')}]")
-            text = source.get("text", "")[:800]  # Truncate
-            parts.append(text)
+    # Add retrieved documents (defensive: handle None)
+    for i, source in enumerate((retrieved_sources or [])[:5], 1):
+        if source is None:
+            continue
+        if i == 1:
+            parts.append("### Knowledge Base Sources:")
+        parts.append(f"\n[Source {i}: {(source or {}).get('source', 'Unknown')}]")
+        text = ((source or {}).get("text") or "")[:800]  # Truncate (guard: text may be None)
+        parts.append(text)
 
-    # Add relevant tool outputs
-    if tool_calls:
-        for tc in tool_calls:
-            if tc["success"] and tc["tool_name"] in ["get_weather_forecast", "get_market_prices"]:
-                parts.append(f"\n### {tc['tool_name']} Output:")
-                output = json.dumps(tc["tool_output"], indent=2, default=str)
+    # Add relevant tool outputs (defensive: handle None)
+    for tc in (tool_calls or []):
+        if tc is None:
+            continue
+        tc = tc or {}
+        if tc.get("success") and tc.get("tool_name") in ["get_weather_forecast", "get_market_prices"]:
+                parts.append(f"\n### {tc.get('tool_name', 'unknown')} Output:")
+                output = json.dumps(tc.get("tool_output", ""), indent=2, default=str)
                 if len(output) > 1000:
                     output = output[:1000] + "..."
                 parts.append(output)

@@ -2,7 +2,7 @@
 SQLAlchemy models for the Farmer RAG Agent database.
 
 This module defines the database schema for storing:
-- Farmer profiles and contact information
+- User profiles and contact information
 - Farm details and locations
 - Crop planting and growth stage tracking
 - Advisory history with groundedness scores
@@ -28,6 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 import enum
+from pgvector.sqlalchemy import Vector
 
 
 class Base(DeclarativeBase):
@@ -61,65 +62,18 @@ class DocumentStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-class Farmer(Base):
-    """
-    Farmer profile containing contact and location information.
+class UserRole(str, enum.Enum):
+    """Role for authenticated users."""
+    ADMIN = "admin"
+    FARMER = "farmer"
 
-    Each farmer can have multiple farms and receives personalized
-    advisory messages based on their location and crop portfolio.
-    """
-    __tablename__ = "farmers"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4
-    )
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-
-    # Location data for weather and regional advice
-    location_lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    location_lon: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    region: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    district: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-
-    # Preferences
-    preferred_language: Mapped[str] = mapped_column(
-        String(10),
-        default="en",
-        nullable=False
-    )
-
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False
-    )
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-
-    # Relationships
-    farms: Mapped[List["Farm"]] = relationship(
-        "Farm",
-        back_populates="farmer",
-        cascade="all, delete-orphan"
-    )
-    advisories: Mapped[List["Advisory"]] = relationship(
-        "Advisory",
-        back_populates="farmer",
-        cascade="all, delete-orphan"
-    )
-
-    def __repr__(self) -> str:
-        return f"<Farmer(id={self.id}, name='{self.name}', region='{self.region}')>"
+class JobStatus(str, enum.Enum):
+    """Background job status."""
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class Farm(Base):
@@ -136,9 +90,9 @@ class Farm(Base):
         primary_key=True,
         default=uuid.uuid4
     )
-    farmer_id: Mapped[uuid.UUID] = mapped_column(
+    user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("farmers.id", ondelete="CASCADE"),
+        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False
     )
 
@@ -168,7 +122,7 @@ class Farm(Base):
     )
 
     # Relationships
-    farmer: Mapped["Farmer"] = relationship("Farmer", back_populates="farms")
+    user: Mapped["User"] = relationship("User")
     crops: Mapped[List["Crop"]] = relationship(
         "Crop",
         back_populates="farm",
@@ -266,9 +220,9 @@ class Advisory(Base):
         primary_key=True,
         default=uuid.uuid4
     )
-    farmer_id: Mapped[uuid.UUID] = mapped_column(
+    user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("farmers.id", ondelete="CASCADE"),
+        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False
     )
 
@@ -299,7 +253,7 @@ class Advisory(Base):
         nullable=True
     )  # [{claim, supported, source_id}]
 
-    # Farmer interaction
+    # User interaction
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     farmer_feedback: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -316,7 +270,7 @@ class Advisory(Base):
     )
 
     # Relationships
-    farmer: Mapped["Farmer"] = relationship("Farmer", back_populates="advisories")
+    user: Mapped["User"] = relationship("User")
 
     def __repr__(self) -> str:
         return f"<Advisory(id={self.id}, score={self.groundedness_score:.2f})>"
@@ -383,7 +337,8 @@ class Document(Base):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Content metadata (extracted during processing)
-    metadata: Mapped[Optional[dict]] = mapped_column(
+    extra_metadata: Mapped[Optional[dict]] = mapped_column(
+        "metadata",
         JSON,
         nullable=True
     )  # {crop_types, topics, page_count, etc.}
@@ -408,3 +363,162 @@ class Document(Base):
 
     def __repr__(self) -> str:
         return f"<Document(id={self.id}, filename='{self.filename}', status={self.status.value})>"
+
+
+class User(Base):
+    """
+    Authenticated user (mirrors Supabase auth.users).
+    """
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    role: Mapped[UserRole] = mapped_column(
+        SQLEnum(UserRole),
+        default=UserRole.FARMER,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    profile: Mapped[Optional["UserProfile"]] = relationship(
+        "UserProfile",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class UserProfile(Base):
+    """
+    Extended profile for a user.
+    """
+    __tablename__ = "user_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    region: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    language: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    location_lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    location_lon: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user: Mapped["User"] = relationship("User", back_populates="profile")
+
+
+class Conversation(Base):
+    """
+    Conversation container for a user.
+    """
+    __tablename__ = "conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tags: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Message(Base):
+    """
+    Message within a conversation.
+    """
+    __tablename__ = "messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # user | assistant | tool
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    extra_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ToolCall(Base):
+    """
+    Tool calls associated with a conversation.
+    """
+    __tablename__ = "tool_calls"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id"),
+        nullable=False,
+    )
+    tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    tool_input: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    tool_output: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class DocumentChunk(Base):
+    """
+    Vectorized document chunk for pgvector retrieval.
+    """
+    __tablename__ = "document_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id"),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list] = mapped_column(Vector(1536), nullable=False)
+    extra_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class BackgroundJob(Base):
+    """
+    Background job tracking for async processing.
+    """
+    __tablename__ = "background_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[JobStatus] = mapped_column(
+        SQLEnum(JobStatus),
+        default=JobStatus.QUEUED,
+        nullable=False,
+    )
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    progress: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    run_after: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class EvaluationRun(Base):
+    """
+    Stored evaluation run results for tracking agent performance over time.
+    """
+    __tablename__ = "evaluation_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    summary: Mapped[dict] = mapped_column(JSON, nullable=False)  # Summary statistics
+    results: Mapped[dict] = mapped_column(JSON, nullable=False)  # Detailed test results
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

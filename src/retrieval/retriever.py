@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from src.config.settings import get_settings
 from src.retrieval.vector_store import VectorStore
+from src.retrieval.db_vector_store import DatabaseVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,13 @@ class Retriever:
             confidence_threshold: Minimum similarity score for results
         """
         settings = get_settings()
-        self.vector_store = vector_store or VectorStore()
+        if vector_store is not None:
+            self.vector_store = vector_store
+        else:
+            if settings.vector_backend.lower() == "pgvector":
+                self.vector_store = DatabaseVectorStore()
+            else:
+                self.vector_store = VectorStore()
         self.top_k = top_k or settings.retrieval_top_k
         self.confidence_threshold = confidence_threshold or settings.confidence_threshold
 
@@ -115,13 +122,13 @@ class Retriever:
             topics=topics,
             growth_stages=growth_stages,
             top_k=effective_top_k * 2,
-        )
+        ) or []
         if not raw_results and (crop_types or topics or growth_stages):
             logger.info("No filtered results; retrying without filters.")
             raw_results = self.vector_store.search(
                 query=query,
                 top_k=effective_top_k * 2,
-            )
+            ) or []
 
         # Convert to RetrievalResult objects
         all_results = []
@@ -181,9 +188,13 @@ class Retriever:
         growth_stages = []
 
         if farmer_context:
-            # Get all active crop types from farmer's farms
-            for farm in farmer_context.get("farms", []):
-                for crop in farm.get("crops", []):
+            # Get all active crop types from farmer's farms (defensive: handle None)
+            for farm in (farmer_context.get("farms") or []):
+                if farm is None:
+                    continue
+                for crop in ((farm or {}).get("crops") or []):
+                    if crop is None:
+                        continue
                     if crop.get("type"):
                         crop_types.append(crop["type"])
                     if crop.get("growth_stage"):

@@ -109,6 +109,11 @@ class Settings(BaseSettings):
         description="Minimum confidence score for retrieval results"
     )
 
+    vector_backend: str = Field(
+        default="pgvector",
+        description="Vector backend to use: pgvector or chroma"
+    )
+
     # ==================== Google Drive Configuration ====================
     google_drive_folder_id: Optional[str] = Field(
         default=None,
@@ -118,6 +123,11 @@ class Settings(BaseSettings):
     google_credentials_path: str = Field(
         default="./credentials.json",
         description="Path to Google OAuth credentials file"
+    )
+
+    google_oauth_redirect_uri: Optional[str] = Field(
+        default=None,
+        description="OAuth redirect URI for web-based authentication (e.g., http://localhost:3000/auth/google/callback)"
     )
 
     # ==================== LangSmith Configuration ====================
@@ -164,6 +174,75 @@ class Settings(BaseSettings):
         ge=0,
         le=5,
         description="Maximum retries if groundedness score is below threshold"
+    )
+
+    max_agent_iterations: int = Field(
+        default=10,
+        ge=1,
+        le=20,
+        description="Maximum reasoning iterations before escalation"
+    )
+
+    job_poll_interval_seconds: int = Field(
+        default=5,
+        ge=1,
+        le=60,
+        description="Background job polling interval in seconds"
+    )
+
+    rate_limit_requests: int = Field(
+        default=120,
+        ge=0,
+        le=10000,
+        description="Requests allowed per window (0 disables rate limiting)"
+    )
+
+    rate_limit_window_seconds: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+        description="Rate limit window in seconds"
+    )
+
+    enable_metrics: bool = Field(
+        default=True,
+        description="Enable Prometheus metrics endpoint"
+    )
+
+    # ==================== Supabase Auth ====================
+    supabase_url: Optional[str] = Field(
+        default=None,
+        description="Supabase project URL"
+    )
+
+    supabase_anon_key: Optional[str] = Field(
+        default=None,
+        description="Supabase anonymous API key (client-side)"
+    )
+
+    supabase_service_role_key: Optional[str] = Field(
+        default=None,
+        description="Supabase service role key (server-side only)"
+    )
+
+    supabase_jwt_secret: Optional[str] = Field(
+        default=None,
+        description="Supabase JWT secret for token verification"
+    )
+
+    supabase_jwks_url: Optional[str] = Field(
+        default=None,
+        description="Supabase JWKS URL for token verification"
+    )
+
+    supabase_jwt_issuer: Optional[str] = Field(
+        default=None,
+        description="Supabase JWT issuer (defaults to {SUPABASE_URL}/auth/v1)"
+    )
+
+    supabase_jwt_audience: Optional[str] = Field(
+        default="authenticated",
+        description="Expected JWT audience for Supabase access tokens"
     )
 
     @field_validator("app_env")

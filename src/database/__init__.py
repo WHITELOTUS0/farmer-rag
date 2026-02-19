@@ -8,12 +8,19 @@ from src.database.connection import (
 )
 from src.database.models import (
     Base,
-    Farmer,
     Farm,
     Crop,
     Advisory,
     SystemConfig,
     Document,
+    User,
+    UserProfile,
+    Conversation,
+    Message,
+    ToolCall,
+    DocumentChunk,
+    BackgroundJob,
+    EvaluationRun,
 )
 
 __all__ = [
@@ -24,10 +31,17 @@ __all__ = [
     "AsyncSessionLocal",
     # Models
     "Base",
-    "Farmer",
     "Farm",
     "Crop",
     "Advisory",
     "SystemConfig",
     "Document",
+    "User",
+    "UserProfile",
+    "Conversation",
+    "Message",
+    "ToolCall",
+    "DocumentChunk",
+    "BackgroundJob",
+    "EvaluationRun",
 ]

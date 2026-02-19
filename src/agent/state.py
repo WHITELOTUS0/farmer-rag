@@ -66,6 +66,9 @@ class AgentState(TypedDict):
     should_continue: bool
     error: Optional[str]
 
+    # Pending tool to execute (must be in schema so LangGraph persists it)
+    _pending_tool: Optional[Dict[str, Any]]
+
 
 def create_initial_state(
     query: str,
@@ -95,4 +98,5 @@ def create_initial_state(
         iteration_count=0,
         should_continue=True,
         error=None,
+        _pending_tool=None,
     )

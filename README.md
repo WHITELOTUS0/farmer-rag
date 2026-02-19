@@ -1,10 +1,11 @@
-# 🌾 Farmer RAG Advisory System
+# 🌾 Farmer RAG Advisory System (Backend)
 
-An AI-powered agricultural advisory system for smallholder farmers in East Africa, providing personalized recommendations for maize, beans, and tomatoes based on weather, market prices, and agronomic best practices.
+Backend API for an AI-powered agricultural advisory system for smallholder farmers in East Africa. This service provides RAG-based responses, weather/market tools, document ingestion, and pgvector search via FastAPI.
 
 ## 🎯 Project Overview
 
 This system implements a **RAG-enabled agent** that:
+
 - Retrieves information from agricultural knowledge bases
 - Fetches real-time weather forecasts
 - Provides market price guidance
@@ -12,9 +13,9 @@ This system implements a **RAG-enabled agent** that:
 
 Built for **04-801-W3 Agentic AI: Fundamentals and Applications** at Carnegie Mellon University.
 
-## 🏗️ Architecture
+## 🏗️ Architecture (Backend)
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                    FARMER RAG SYSTEM                             │
 ├─────────────────────────────────────────────────────────────────┤
@@ -42,8 +43,8 @@ Built for **04-801-W3 Agentic AI: Fundamentals and Applications** at Carnegie Me
 │  └─────────────┘  └─────────────┘  └─────────────┘             │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │                    GRADIO UI                              │   │
-│  │   [Chat] [Documents] [Admin]                              │   │
+│  │               FASTAPI BACKEND (THIS REPO)                 │   │
+│  │   /chat  /documents  /search  /admin  /auth               │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -51,11 +52,12 @@ Built for **04-801-W3 Agentic AI: Fundamentals and Applications** at Carnegie Me
 
 ## 📋 Requirements
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Backend)
 
 ### 1. Prerequisites
+
 - Python 3.10+
-- PostgreSQL (optional, for persistent farmer data)
+- PostgreSQL (Supabase recommended)
 - OpenAI API key
 
 ### 2. Installation
@@ -77,23 +79,20 @@ cp .env.example .env
 # Edit .env and add OPENAI_API_KEY=sk-your-key
 ```
 
-### 3. Run the Application
+### 3. Run the Backend API
 
 ```bash
-# Launch the Gradio UI
-python scripts/run_app.py
-
-# Or with options
-python scripts/run_app.py --share  # Create public link
-python scripts/run_app.py --port 8080  # Custom port
+# Run the FastAPI backend
+uvicorn src.api.main:app --reload --port 8000
 ```
 
-### 4. Access the UI
-Open http://localhost:7860 in your browser.
+### 4. Access API Docs
+
+Open [http://localhost:8000/docs](http://localhost:8000/docs) in your browser.
 
 ## 📁 Project Structure
 
-```
+```text
 farmer-rag/
 ├── src/
 │   ├── agent/           # LangGraph agent implementation
@@ -119,7 +118,7 @@ farmer-rag/
 │   │
 │   ├── database/        # PostgreSQL models
 │   │
-│   └── ui/              # Gradio interface
+│   └── ui/              # Legacy Gradio interface (optional)
 │
 ├── scripts/             # Utility scripts
 ├── docker/              # Docker configuration
@@ -143,39 +142,58 @@ MODEL_TEMPERATURE=0.3
 CONFIDENCE_THRESHOLD=0.80
 RETRIEVAL_TOP_K=5
 
-# Database (optional)
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/farmer_rag
+# Database (Supabase recommended)
+DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/farmer_rag
+DATABASE_URL_SYNC=postgresql://user:pass@host:5432/farmer_rag
+
+# Supabase Auth
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_JWKS_URL=https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json
 ```
 
 ## 🧪 Testing
 
 ```bash
-# Test the agent
-python scripts/test_agent.py
-
-# Test with specific query
-python scripts/test_agent.py "When should I apply fertilizer?"
-
-# Test tools only
-python scripts/test_agent.py --tools-only
+pytest -q
 ```
 
 ## 📚 Adding Documents
 
-### Via UI
-1. Go to the Documents tab
-2. Upload PDF or DOCX files
-3. Or paste text directly
+### Via API (Upload)
 
-### Via Script
-```bash
-python scripts/ingest_local.py /path/to/documents --recursive
-```
+POST `/documents/ingest` (multipart form-data with `file`)
 
-### Via Google Drive
-1. Set `GOOGLE_DRIVE_FOLDER_ID` in `.env`
-2. Add `credentials.json` from Google Cloud Console
-3. Use the sync feature in Admin panel
+### Via API (Google Drive)
+
+POST `/documents/drive-sync` with optional `folder_id`
+
+### Required Drive Files
+
+- `credentials.json` (OAuth client secrets)
+- `token.json` is generated after first OAuth login
+
+### Google OAuth Setup
+
+1. **Create OAuth Credentials**:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Navigate to **APIs & Services** → **Credentials**
+   - Create OAuth 2.0 Client ID (Web application)
+   - Download credentials as `credentials.json`
+
+2. **Configure OAuth Consent Screen**:
+   - Go to **APIs & Services** → **OAuth consent screen**
+   - Set app to "Testing" mode (for development)
+   - Add test users: Click **"+ ADD USERS"** and add your email(s)
+   - Add authorized redirect URI: `http://localhost:3000/auth/google/callback` (or your production URL)
+
+3. **Set Environment Variable** (optional):
+   ```bash
+   GOOGLE_OAUTH_REDIRECT_URI=http://localhost:3000/auth/google/callback
+   ```
+
+**Note**: If you see "access_denied" error, make sure your email is added as a test user in the OAuth consent screen.
 
 ## 🐳 Docker Deployment
 
@@ -192,7 +210,7 @@ docker-compose --profile tools up -d
 
 The system logs all reasoning steps and tool calls. Example trace:
 
-```
+```text
 [REASONING] User asks about fertilizer for maize
 [TOOL_CALL] query_agricultural_knowledge(query="fertilizer maize", crop_type="maize")
 [TOOL_RESULT] Found 3 relevant documents
@@ -213,6 +231,20 @@ The groundedness scoring follows a two-stage pipeline:
 3. **Score Calculation**: `supported_claims / total_claims`
 
 Threshold: Responses with score < 0.80 are flagged as potentially unreliable.
+
+## ✅ Backend Endpoints (Core)
+
+- `POST /chat` (SSE streaming; `?stream=false` for JSON)
+- `POST /documents/ingest`
+- `POST /documents/drive-sync`
+- `POST /search`
+- `GET/POST/PATCH/DELETE /farms`
+- `GET/POST/PATCH/DELETE /crops`
+- `GET /auth/me`
+- `GET/PUT /admin/config/{key}`
+- `POST /admin/embeddings/rebuild`
+- `GET /admin/jobs/{id}`
+- `GET /metrics` (Prometheus)
 
 ## 👥 Contributors
 

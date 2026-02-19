@@ -1,0 +1,18 @@
+Sample agronomy notes for ingestion.
+
+Maize spacing:
+- Row spacing: 75 cm
+- Plant spacing: 25 cm
+- Target population: 53,000 to 60,000 plants per hectare
+
+Beans spacing:
+- Row spacing: 45 cm
+- Plant spacing: 10 cm
+
+Tomato spacing:
+- Row spacing: 90 cm
+- Plant spacing: 45 cm
+
+General tips:
+- Plant at onset of rains for maize.
+- Keep weeds controlled in early growth stages.

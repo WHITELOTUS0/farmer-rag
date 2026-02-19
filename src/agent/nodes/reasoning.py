@@ -38,33 +38,42 @@ def reasoning_node(state: AgentState) -> Dict[str, Any]:
 
     # Build context from previous tool calls
     tool_context = ""
-    if state["tool_calls"]:
-        tool_context = "\n\n## Previous Tool Results:\n"
-        for tc in state["tool_calls"]:
-            tool_context += f"\n### {tc['tool_name']}\n"
-            tool_context += f"Input: {json.dumps(tc['tool_input'], indent=2)}\n"
-            if tc['success']:
-                # Truncate long outputs
-                output_str = json.dumps(tc['tool_output'], indent=2, default=str)
-                if len(output_str) > 2000:
-                    output_str = output_str[:2000] + "\n... [truncated]"
-                tool_context += f"Output: {output_str}\n"
-            else:
-                tool_context += f"Error: {tc['tool_output']}\n"
+    for tc in (state.get("tool_calls") or []):
+        if tc is None:
+            continue
+        tc = tc or {}
+        if not tool_context:
+            tool_context = "\n\n## Previous Tool Results:\n"
+        tool_context += f"\n### {tc.get('tool_name', 'unknown')}\n"
+        tool_context += f"Input: {json.dumps(tc.get('tool_input', {}), indent=2)}\n"
+        if tc.get('success'):
+            # Truncate long outputs
+            output_str = json.dumps(tc.get('tool_output', ''), indent=2, default=str)
+            if len(output_str) > 2000:
+                output_str = output_str[:2000] + "\n... [truncated]"
+            tool_context += f"Output: {output_str}\n"
+        else:
+            tool_context += f"Error: {tc.get('tool_output', '')}\n"
 
-    # Build farmer context string
+    # Build farmer context string (defensive: handle None for farmer/farms/crops)
     farmer_context_str = "No farmer context available."
     if state["farmer_context"]:
-        ctx = state["farmer_context"]
+        ctx = state["farmer_context"] or {}
+        farmer = ctx.get("farmer") or {}
         farmer_context_str = f"""
-Farmer: {ctx.get('farmer', {}).get('name', 'Unknown')}
-Region: {ctx.get('farmer', {}).get('region', 'Unknown')}
-Location: {ctx.get('farmer', {}).get('location', 'Unknown')}
+Farmer: {farmer.get('name', 'Unknown')}
+Region: {farmer.get('region', 'Unknown')}
+Location: {farmer.get('location', 'Unknown')}
 """
         # Add crop information
-        for farm in ctx.get("farms", []):
-            farmer_context_str += f"\nFarm: {farm.get('name', 'Unknown')}"
-            for crop in farm.get("crops", []):
+        for farm in (ctx.get("farms") or []):
+            if farm is None:
+                continue
+            farmer_context_str += f"\nFarm: {(farm or {}).get('name', 'Unknown')}"
+            for crop in ((farm or {}).get("crops") or []):
+                if crop is None:
+                    continue
+                crop = crop or {}
                 farmer_context_str += f"\n  - {crop.get('type', 'Unknown')} at {crop.get('growth_stage', 'unknown')} stage"
                 if crop.get("planting_date"):
                     farmer_context_str += f" (planted: {crop['planting_date']})"
@@ -78,22 +87,28 @@ Location: {ctx.get('farmer', {}).get('location', 'Unknown')}
 {tool_context}
 
 ## Instructions
-Based on the above information, decide your next action:
+Decide your next action. **Only call tools when the question actually requires specific data.**
 
-1. If you need weather information for the farmer's location, call get_weather_forecast
-2. If you need agricultural knowledge (farming practices, pest control, etc.), call query_agricultural_knowledge
-3. If you need market prices, call get_market_prices
-4. If you have enough information to provide a complete, accurate response, generate your response
+**Respond directly (action: final_response) for:**
+- Greetings, introductions, "who are you", "how can you help"
+- Simple clarifications or follow-up questions
+- General conversational replies
+- Questions you can answer from context alone
 
-Think step by step about what information you need.
+**Call tools only when the question needs:**
+- Weather forecasts → get_weather_forecast
+- Market/crop prices → get_market_prices
+- Specific farming practices, pest control, fertilizer dosages, disease management → query_agricultural_knowledge
 
-Respond in JSON format:
+If in doubt, prefer responding directly. Call ONE tool at a time (do not use multi_tool_use.parallel).
+
+Respond with valid JSON only (no markdown, no code blocks):
 {{
-    "thought": "Your reasoning about what to do next",
+    "thought": "Your reasoning",
     "action": "call_tool" or "final_response",
-    "tool_name": "tool name if action is call_tool",
-    "tool_args": {{}}, // tool arguments if action is call_tool
-    "response": "your response if action is final_response"
+    "tool_name": "get_weather_forecast | get_market_prices | query_agricultural_knowledge",
+    "tool_args": {{}},
+    "response": "only if action is final_response"
 }}"""
 
     # Define tools for the LLM
@@ -189,27 +204,105 @@ Respond in JSON format:
 
         message = response.choices[0].message
 
-        # Check if the model wants to call a tool
+        # Check if the model wants to call a tool (native function calling)
         if message.tool_calls:
             tool_call = message.tool_calls[0]
             tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
+            raw_args = tool_call.function.arguments or "{}"
+            try:
+                tool_args = json.loads(raw_args) or {}
+            except json.JSONDecodeError:
+                tool_args = {}
 
-            logger.info(f"Reasoning decided to call tool: {tool_name}")
+            # multi_tool_use.parallel via native function calling: pick first uncalled tool
+            if tool_name == "multi_tool_use.parallel":
+                already_called = {
+                    (tc or {}).get("tool_name")
+                    for tc in (state.get("tool_calls") or [])
+                    if tc and (tc or {}).get("success")
+                }
+                for tu in (tool_args.get("tool_uses") or []):
+                    if tu is None:
+                        continue
+                    candidate = (tu or {}).get("recipient_name", "").replace("functions.", "")
+                    if candidate and candidate not in already_called:
+                        tool_name = candidate
+                        tool_args = (tu or {}).get("parameters", {}) or {}
+                        break
+                else:
+                    # All parallel tools done — fall through to JSON / text parsing
+                    tool_name = None
 
-            return {
-                "messages": [{"role": "assistant", "content": f"Calling {tool_name}...", "tool_call": tool_call}],
-                "should_continue": True,
-                "iteration_count": state["iteration_count"] + 1,
-                "_pending_tool": {"name": tool_name, "args": tool_args},
-            }
+            if tool_name and tool_name in ["get_weather_forecast", "get_market_prices", "query_agricultural_knowledge"]:
+                logger.info(f"Reasoning decided to call tool: {tool_name}")
+                return {
+                    "messages": [{"role": "assistant", "content": f"Calling {tool_name}...", "tool_call": tool_call}],
+                    "should_continue": True,
+                    "iteration_count": state["iteration_count"] + 1,
+                    "_pending_tool": {"name": tool_name, "args": tool_args},
+                }
 
-        # Model wants to respond directly
-        response_content = message.content
+        # Model wants to respond directly - check if it's JSON with tool calls
+        response_content = message.content or ""
+
+        # Strip markdown code blocks (LLM often wraps JSON in ```json ... ```)
+        _raw = response_content.strip()
+        if _raw.startswith("```"):
+            _raw = _raw.split("```", 2)[1]
+            if _raw.lower().startswith("json"):
+                _raw = _raw[4:].lstrip()
+            response_content = _raw
 
         # Try to parse as JSON for structured response
         try:
             parsed = json.loads(response_content)
+            
+            # Check if LLM wants to call a tool (even though it didn't use function calling)
+            if parsed.get("action") == "call_tool":
+                tool_name = (parsed.get("tool_name", "") or "").replace("functions.", "").strip()
+                
+                # Handle multi_tool_use.parallel by picking the first uncalled tool
+                if tool_name == "multi_tool_use.parallel":
+                    tool_uses = (parsed.get("tool_args") or {}).get("tool_uses") or []
+                    if tool_uses:
+                        # Skip tools that have already been successfully called
+                        already_called = {
+                            (tc or {}).get("tool_name")
+                            for tc in (state.get("tool_calls") or [])
+                            if tc and (tc or {}).get("success")
+                        }
+                        next_tool_use = None
+                        for tu in tool_uses:
+                            if tu is None:
+                                continue
+                            candidate = (tu or {}).get("recipient_name", "").replace("functions.", "")
+                            if candidate and candidate not in already_called:
+                                next_tool_use = (candidate, (tu or {}).get("parameters", {}) or {})
+                                break
+
+                        if next_tool_use:
+                            tool_name, tool_args = next_tool_use
+                            logger.info(f"Reasoning decided to call tool (from parallel): {tool_name}")
+                            return {
+                                "messages": [{"role": "assistant", "content": f"Calling {tool_name}...", "tool_call": {"function": {"name": tool_name, "arguments": json.dumps(tool_args)}}}],
+                                "should_continue": True,
+                                "iteration_count": state["iteration_count"] + 1,
+                                "_pending_tool": {"name": tool_name, "args": tool_args},
+                            }
+                        # All tools in the parallel set have been called — fall through to generate response
+                elif tool_name in ["get_weather_forecast", "get_market_prices", "query_agricultural_knowledge"]:
+                    # Direct tool call from JSON
+                    tool_args = (parsed.get("tool_args") or {}) or {}
+                    logger.info(f"Reasoning decided to call tool (from JSON): {tool_name}")
+                    
+                    return {
+                        "messages": [{"role": "assistant", "content": f"Calling {tool_name}...", "tool_call": {"function": {"name": tool_name, "arguments": json.dumps(tool_args)}}}],
+                        "should_continue": True,
+                        "iteration_count": state["iteration_count"] + 1,
+                        "_pending_tool": {"name": tool_name, "args": tool_args},
+                    }
+            
+            # If it's a final response
             if "response" in parsed:
                 response_content = parsed["response"]
         except json.JSONDecodeError:
@@ -222,6 +315,7 @@ Respond in JSON format:
             "draft_response": response_content,
             "should_continue": False,
             "iteration_count": state["iteration_count"] + 1,
+            "_pending_tool": None,  # Clear any stale pending tool
         }
 
     except Exception as e:

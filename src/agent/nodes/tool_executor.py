@@ -8,21 +8,20 @@ import logging
 from typing import Dict, Any
 
 from src.agent.state import AgentState, ToolCall
-from src.tools.registry import ToolRegistry
+from src.tools import (
+    get_weather_forecast,
+    get_market_prices,
+    query_agricultural_knowledge,
+)
 
 logger = logging.getLogger(__name__)
 
-# Global tool registry (initialized on first use)
-_tool_registry = None
-
-
-def get_tool_registry() -> ToolRegistry:
-    """Get or create the global tool registry."""
-    global _tool_registry
-    if _tool_registry is None:
-        from src.tools.registry import create_default_registry
-        _tool_registry = create_default_registry()
-    return _tool_registry
+# Tool mapping for @tool decorated functions
+_TOOL_MAP = {
+    "get_weather_forecast": get_weather_forecast,
+    "get_market_prices": get_market_prices,
+    "query_agricultural_knowledge": query_agricultural_knowledge,
+}
 
 
 def tool_executor_node(state: AgentState) -> Dict[str, Any]:
@@ -58,51 +57,83 @@ def tool_executor_node(state: AgentState) -> Dict[str, Any]:
             "should_continue": True,  # Continue to reasoning
         }
 
-    tool_name = pending_tool["name"]
-    tool_args = pending_tool["args"]
+    pending_tool = pending_tool or {}
+    tool_name = pending_tool.get("name") or ""
+    tool_args = pending_tool.get("args") or {}
+    retry_count = pending_tool.get("retry_count", 0)
 
-    logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
+    logger.info(f"🔧 ACT: Executing tool: {tool_name} with args: {tool_args} (retry: {retry_count})")
 
-    registry = get_tool_registry()
-    result = registry.execute(tool_name, **tool_args)
+    # Get tool function
+    tool_func = _TOOL_MAP.get(tool_name)
+    if not tool_func:
+        logger.error(f"Unknown tool: {tool_name}")
+        tool_call_record: ToolCall = {
+            "tool_name": tool_name,
+            "tool_input": tool_args,
+            "tool_output": f"Unknown tool: {tool_name}",
+            "success": False,
+            "retry_count": retry_count,
+        }
+        return {
+            "tool_calls": state.get("tool_calls", []) + [tool_call_record],
+            "should_continue": False,
+            "error": f"Unknown tool: {tool_name}",
+        }
+
+    # Execute tool
+    try:
+        result = tool_func.invoke(tool_args)
+        success = True
+        output = result
+        error = None
+    except Exception as e:
+        logger.error(f"Tool {tool_name} execution failed: {e}")
+        success = False
+        output = None
+        error = str(e)
 
     # Create tool call record
     tool_call_record: ToolCall = {
         "tool_name": tool_name,
         "tool_input": tool_args,
-        "tool_output": result.data if result.success else result.error,
-        "success": result.success,
+        "tool_output": output if success else error,
+        "success": success,
+        "retry_count": retry_count,
     }
 
     # Build update
     updates: Dict[str, Any] = {
         "tool_calls": state.get("tool_calls", []) + [tool_call_record],
         "should_continue": True,  # Continue reasoning after tool execution
+        "_pending_tool": None,    # Clear pending tool so routing doesn't re-execute it
     }
 
     # If this was a knowledge base query, update retrieved sources
-    if tool_name == "query_agricultural_knowledge" and result.success:
-        if result.data and "results" in result.data:
+    if tool_name == "query_agricultural_knowledge" and success:
+        if isinstance(output, dict) and "results" in output:
             sources = [
                 {
-                    "text": r["text"],
-                    "source": r["source"],
-                    "source_id": r["source_id"],
-                    "confidence": r["confidence"],
+                    "text": (r or {}).get("text", ""),
+                    "source": (r or {}).get("source", "Unknown"),
+                    "source_id": (r or {}).get("source_id", ""),
+                    "confidence": (r or {}).get("confidence", 0.0),
                 }
-                for r in result.data["results"]
+                for r in (output.get("results") or [])
+                if r is not None
             ]
-            updates["retrieved_sources"] = state.get("retrieved_sources", []) + sources
+            updates["retrieved_sources"] = (state.get("retrieved_sources") or []) + sources
 
     # Add tool result to messages for context
+    import json
     tool_result_msg = {
         "role": "tool",
         "tool_name": tool_name,
-        "content": result.to_string()[:3000],  # Truncate long results
+        "content": json.dumps(output, default=str)[:3000] if success else f"Error: {error}",
     }
-    updates["messages"] = [tool_result_msg]
+    updates["messages"] = state.get("messages", []) + [tool_result_msg]
 
-    logger.info(f"Tool {tool_name} completed: success={result.success}")
+    logger.info(f"✅ Tool {tool_name} completed: success={success}")
 
     return updates
 
