@@ -176,6 +176,11 @@ Set `CORS_ORIGINS=https://your-frontend.vercel.app` in backend env.
 **Supabase:** Add production URLs to:
 - Authentication → URL Configuration → Site URL, Redirect URLs
 
+**Backend auth (new Google users):** The backend auto-creates users on first `/auth/me` when the JWT is valid. If you see 401s for new OAuth users:
+- Ensure `SUPABASE_JWKS_URL` is set (for RS256 tokens)
+- Email is extracted from `email`, `user_metadata.email`, or `raw_user_meta_data.email`
+- Set `SUPABASE_JWT_AUDIENCE=` (empty) only if your Supabase project uses a custom JWT template without audience
+
 ---
 
 ## Database & Migrations

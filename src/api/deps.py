@@ -2,6 +2,7 @@
 FastAPI dependencies (auth, config, request context).
 """
 
+import logging
 from typing import Optional, Dict, Any
 import uuid
 
@@ -15,7 +16,7 @@ from src.config.settings import get_settings
 from src.database.models import User, UserRole
 from src.database.connection import get_db_session
 
-from src.database.connection import get_db_session
+logger = logging.getLogger(__name__)
 
 
 def _get_jwks_client(jwks_url: str) -> PyJWKClient:
@@ -28,7 +29,7 @@ def _verify_supabase_jwt(token: str) -> Dict[str, Any]:
     if issuer is None and settings.supabase_url:
         issuer = f"{settings.supabase_url}/auth/v1"
 
-    audience = settings.supabase_jwt_audience
+    audience = settings.supabase_jwt_audience or None
     try:
         header = jwt.get_unverified_header(token)
     except jwt.PyJWTError as exc:
@@ -53,15 +54,19 @@ def _verify_supabase_jwt(token: str) -> Dict[str, Any]:
         try:
             jwks_client = _get_jwks_client(settings.supabase_jwks_url)
             signing_key = jwks_client.get_signing_key_from_jwt(token).key
+            opts = {"require": ["exp", "iat", "sub"]}
+            if audience is None:
+                opts["verify_aud"] = False
             return jwt.decode(
                 token,
                 signing_key,
                 algorithms=[alg],
                 audience=audience,
                 issuer=issuer,
-                options={"require": ["exp", "iat", "sub"]},
+                options=opts,
             )
         except Exception as exc:
+            logger.warning("JWT verification failed (RS/ES): %s", exc)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Invalid token: {exc}",
@@ -73,13 +78,16 @@ def _verify_supabase_jwt(token: str) -> Dict[str, Any]:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Supabase JWT secret is not configured",
             )
+        opts = {"require": ["exp", "iat", "sub"]}
+        if audience is None:
+            opts["verify_aud"] = False
         return jwt.decode(
             token,
             settings.supabase_jwt_secret,
             algorithms=[alg],
             audience=audience,
             issuer=issuer,
-            options={"require": ["exp", "iat", "sub"]},
+            options=opts,
         )
 
     raise HTTPException(
@@ -93,6 +101,7 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> dic
     Placeholder for Supabase JWT verification.
     """
     if not authorization:
+        logger.debug("Auth failed: missing Authorization header")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing Authorization header",
@@ -128,8 +137,20 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> dic
             detail="Token subject is not a valid UUID",
         ) from exc
 
-    email = claims.get("email")
+    email = _extract_email_from_claims(claims)
     return {"user_id": user_id, "email": email, "claims": claims}
+
+
+def _extract_email_from_claims(claims: Dict[str, Any]) -> Optional[str]:
+    """Extract email from Supabase JWT claims (OAuth users may have it in user_metadata)."""
+    email = claims.get("email")
+    if email:
+        return email
+    for key in ("user_metadata", "raw_user_meta_data"):
+        meta = claims.get(key)
+        if isinstance(meta, dict) and meta.get("email"):
+            return meta["email"]
+    return None
 
 
 async def require_admin(
