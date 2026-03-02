@@ -62,14 +62,42 @@ def _get_fast_conversational_response(
 ) -> str:
     """Return a quick, friendly response for simple conversational queries."""
     name = "there"
+    farm_summary = ""
     if farmer_context:
         farmer = (farmer_context or {}).get("farmer") or {}
         if farmer.get("name"):
             name = str(farmer["name"]).split()[0]  # First name only
+
+        farms = (farmer_context or {}).get("farms") or []
+        crop_lines = []
+        farm_names = []
+        for farm in farms:
+            farm_name = (farm or {}).get("name", "") or ""
+            if farm_name and farm_name.lower() not in ("unknown", ""):
+                farm_names.append(farm_name)
+            for crop in ((farm or {}).get("crops") or []):
+                crop_type = (crop or {}).get("type", "") or ""
+                stage = (crop or {}).get("growth_stage", "") or ""
+                if crop_type:
+                    desc = crop_type
+                    if stage:
+                        desc += f" ({stage} stage)"
+                    if farm_name and farm_name.lower() not in ("unknown", ""):
+                        desc += f" at {farm_name}"
+                    crop_lines.append(desc)
+
+        if farm_names or crop_lines:
+            parts = []
+            if farm_names:
+                parts.append(f"farm{'s' if len(farm_names) > 1 else ''}: {', '.join(farm_names)}")
+            if crop_lines:
+                parts.append(f"crop{'s' if len(crop_lines) > 1 else ''}: {', '.join(crop_lines)}")
+            farm_summary = f" I can see you have {' and '.join(parts)}."
+
     return (
-        f"Hello {name}! I'm your Agricultural Advisory Agent. "
+        f"Hello {name}! I'm your Agricultural Advisory Agent.{farm_summary} "
         "I can help with farming advice—weather forecasts, crop management, pest control, "
-        "fertilizer recommendations, and market prices for maize, beans, and tomatoes. "
+        "fertilizer recommendations, and market prices. "
         "What would you like to know?"
     )
 

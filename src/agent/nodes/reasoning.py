@@ -56,33 +56,50 @@ def reasoning_node(state: AgentState) -> Dict[str, Any]:
             tool_context += f"Error: {tc.get('tool_output', '')}\n"
 
     # Build farmer context string (defensive: handle None for farmer/farms/crops)
-    farmer_context_str = "No farmer context available."
+    # Use explicit "registered profile" framing so the LLM treats this as
+    # confirmed knowledge, not speculation.
+    farmer_context_str = "No registered profile found for this farmer."
     if state["farmer_context"]:
         ctx = state["farmer_context"] or {}
         farmer = ctx.get("farmer") or {}
-        farmer_context_str = f"""
-Farmer: {farmer.get('name', 'Unknown')}
-Region: {farmer.get('region', 'Unknown')}
-Location: {farmer.get('location', 'Unknown')}
-"""
-        # Add crop information
-        for farm in (ctx.get("farms") or []):
-            if farm is None:
-                continue
-            farmer_context_str += f"\nFarm: {(farm or {}).get('name', 'Unknown')}"
-            for crop in ((farm or {}).get("crops") or []):
-                if crop is None:
+        lines = ["This farmer's registered profile:"]
+        lines.append(f"  Name: {farmer.get('name', 'Unknown')}")
+        region = farmer.get('region')
+        if region and region != 'Unknown':
+            lines.append(f"  Region: {region}")
+        loc = farmer.get('location')
+        if loc and loc != 'Unknown':
+            if isinstance(loc, dict):
+                lines.append(f"  Location: lat={loc.get('lat')}, lon={loc.get('lon')}")
+            else:
+                lines.append(f"  Location: {loc}")
+
+        farms = ctx.get("farms") or []
+        if farms:
+            lines.append("  Registered farms and active crops:")
+            for farm in farms:
+                if farm is None:
                     continue
-                crop = crop or {}
-                farmer_context_str += f"\n  - {crop.get('type', 'Unknown')} at {crop.get('growth_stage', 'unknown')} stage"
-                if crop.get("planting_date"):
-                    farmer_context_str += f" (planted: {crop['planting_date']})"
+                farm_name = (farm or {}).get('name', 'Unknown')
+                lines.append(f"    Farm: {farm_name}")
+                for crop in ((farm or {}).get("crops") or []):
+                    if crop is None:
+                        continue
+                    crop = crop or {}
+                    crop_line = f"      - {crop.get('type', 'Unknown')} at {crop.get('growth_stage', 'unknown')} stage"
+                    if crop.get("planting_date"):
+                        crop_line += f" (planted: {crop['planting_date']})"
+                    lines.append(crop_line)
+        else:
+            lines.append("  No farms registered yet.")
+
+        farmer_context_str = "\n".join(lines)
 
     # Build the prompt
     user_message = f"""## Farmer's Question
 {state["current_query"]}
 
-## Farmer's Context
+## What You Already Know About This Farmer (confirmed from their profile)
 {farmer_context_str}
 {tool_context}
 
@@ -91,13 +108,14 @@ Decide your next action. **Only call tools when the question actually requires s
 
 **Respond directly (action: final_response) for:**
 - Greetings, introductions, "who are you", "how can you help"
+- Questions about what you know about the farmer — answer using the profile above
 - Simple clarifications or follow-up questions
 - General conversational replies
 - Questions you can answer from context alone
 
 **Call tools only when the question needs:**
-- Weather forecasts → get_weather_forecast
-- Market/crop prices → get_market_prices
+- Weather forecasts → get_weather_forecast (use the farmer's registered lat/lon from the profile above; if not available, ask for their location)
+- Market/crop prices → get_market_prices (use the farmer's registered region if available)
 - Specific farming practices, pest control, fertilizer dosages, disease management → query_agricultural_knowledge
 
 If in doubt, prefer responding directly. Call ONE tool at a time (do not use multi_tool_use.parallel).
