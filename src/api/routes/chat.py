@@ -13,7 +13,6 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from langchain_core.messages import HumanMessage, AIMessage
 
 from src.api.deps import get_current_user, get_db_session
 from src.api.utils.title_generator import generate_conversation_title
@@ -88,10 +87,8 @@ class ChatRequest(BaseModel):
 def _build_history(messages: List[Message]) -> list:
     history = []
     for msg in messages:
-        if msg.role == "user":
-            history.append(HumanMessage(content=msg.content))
-        elif msg.role == "assistant":
-            history.append(AIMessage(content=msg.content))
+        if msg.role in ("user", "assistant"):
+            history.append({"role": msg.role, "content": msg.content})
     return history
 
 

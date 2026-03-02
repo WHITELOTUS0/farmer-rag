@@ -60,6 +60,21 @@ def verification_node(state: AgentState) -> Dict[str, Any]:
     retrieved_sources = state.get("retrieved_sources") or []
     tool_calls = state.get("tool_calls") or []
 
+    # If no tools were called and no sources retrieved, this is a conversational response.
+    # There is nothing to verify against — skip verification and return 1.0.
+    if not retrieved_sources and not tool_calls:
+        logger.info("No tools called and no sources retrieved — skipping verification (conversational response)")
+        return {
+            "final_response": draft_response,
+            "verification": {
+                "groundedness_score": 1.0,
+                "claims": [],
+                "is_reliable": True,
+                "suggestion": None,
+            },
+            "should_continue": False,
+        }
+
     # Build source context for verification
     sources_text = _format_sources_for_verification(retrieved_sources, tool_calls)
 
