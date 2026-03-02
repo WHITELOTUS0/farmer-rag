@@ -379,26 +379,18 @@ class FarmerAdvisoryAgent:
                     # Merge state updates
                     for key, value in state_update.items():
                         if key == "messages" and key in final_state:
-                            # Append messages (guard: may be None)
+                            # messages uses operator.add — nodes return only new messages,
+                            # so we extend here (mirrors LangGraph's reducer behaviour).
                             lst = final_state[key]
                             if lst is not None:
                                 lst.extend(value if isinstance(value, list) else [value])
                             else:
                                 final_state[key] = value if isinstance(value, list) else [value]
-                        elif key == "tool_calls" and key in final_state:
-                            # Append tool calls (guard: may be None)
-                            lst = final_state[key]
-                            if lst is not None:
-                                lst.extend(value if isinstance(value, list) else [value])
-                            else:
-                                final_state[key] = value if isinstance(value, list) else [value]
-                        elif key == "retrieved_sources" and key in final_state:
-                            # Append sources (guard: final_state[key] may be None)
-                            lst = final_state[key]
-                            if lst is None:
-                                final_state[key] = value if isinstance(value, list) else [value]
-                            else:
-                                lst.extend(value if isinstance(value, list) else [value])
+                        elif key in ("tool_calls", "retrieved_sources") and key in final_state:
+                            # Plain replacement fields — nodes return the full accumulated list.
+                            # Extending here would duplicate every entry on each tool call;
+                            # replace instead so final_state matches LangGraph's internal state.
+                            final_state[key] = value if isinstance(value, list) else [value]
                         else:
                             # Replace value
                             final_state[key] = value

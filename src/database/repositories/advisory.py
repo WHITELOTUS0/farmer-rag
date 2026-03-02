@@ -193,7 +193,7 @@ class AdvisoryRepository:
         )
 
         if farmer_id:
-            query = query.where(Advisory.farmer_id == farmer_id)
+            query = query.where(Advisory.user_id == farmer_id)
 
         result = await self.session.execute(query)
         avg_score = result.scalar()

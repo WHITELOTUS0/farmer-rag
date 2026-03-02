@@ -140,6 +140,7 @@ def verification_node(state: AgentState) -> Dict[str, Any]:
         return {
             "final_response": final_response,
             "verification": verification,
+            "should_continue": False,
         }
 
     except Exception as e:
@@ -187,11 +188,13 @@ def _extract_claims(
 
         content = completion.choices[0].message.content.strip()
 
-        # Clean up response
+        # Clean up markdown code fences if present
         if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
+            parts = content.split("```", 2)
+            if len(parts) > 1:
+                content = parts[1]
+                if content.lower().startswith("json"):
+                    content = content[4:].lstrip()
 
         claims = json.loads(content)
         return claims if isinstance(claims, list) else []
@@ -262,9 +265,11 @@ Respond with a JSON array:
         content = completion.choices[0].message.content.strip()
 
         if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
+            parts = content.split("```", 2)
+            if len(parts) > 1:
+                content = parts[1]
+                if content.lower().startswith("json"):
+                    content = content[4:].lstrip()
 
         verifications = json.loads(content)
         if not isinstance(verifications, list):

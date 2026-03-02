@@ -30,7 +30,7 @@ style: |
 
 CMU 04-801-W3 · Agentic AI: Fundamentals and Applications
 
-Glorry Sibomana
+Glorry Sibomana & Ethel Kwagalakwe
 
 ---
 
@@ -40,10 +40,10 @@ Glorry Sibomana
 
 A single LLM call is not enough because:
 
-- **Multi-source synthesis** — "Should I plant maize now?" requires weather + market prices + agronomic knowledge *combined*
-- **Adaptive behavior** — if retrieval is weak, re-retrieve; if a tool fails, retry
-- **Verification** — hallucinated dosages or planting schedules can cause real harm
-- **Memory** — farmers ask follow-ups across sessions ("Remember the fertilizer advice?")
+- **Multi-source synthesis** : "Should I plant maize now?" requires weather + market prices + agronomic knowledge *combined*
+- **Adaptive behavior** : if retrieval is weak, re-retrieve; if a tool fails, retry
+- **Verification** : hallucinated dosages or planting schedules can cause real harm
+- **Memory** : farmers ask follow-ups across sessions ("Remember the fertilizer advice?")
 
 > An **agent** is the right abstraction: it reasons, calls tools, critiques itself, and remembers.
 

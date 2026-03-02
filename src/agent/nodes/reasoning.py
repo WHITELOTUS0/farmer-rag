@@ -248,10 +248,12 @@ Respond with valid JSON only (no markdown, no code blocks):
         # Strip markdown code blocks (LLM often wraps JSON in ```json ... ```)
         _raw = response_content.strip()
         if _raw.startswith("```"):
-            _raw = _raw.split("```", 2)[1]
-            if _raw.lower().startswith("json"):
-                _raw = _raw[4:].lstrip()
-            response_content = _raw
+            parts = _raw.split("```", 2)
+            if len(parts) > 1:
+                _raw = parts[1]
+                if _raw.lower().startswith("json"):
+                    _raw = _raw[4:].lstrip()
+                response_content = _raw
 
         # Try to parse as JSON for structured response
         try:

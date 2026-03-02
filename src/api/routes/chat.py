@@ -4,8 +4,11 @@ Chat endpoint for streaming RAG agent responses.
 
 import asyncio
 import json
+import logging
 import uuid
 from typing import Optional, List, AsyncGenerator, Tuple, Any, Dict
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -67,8 +70,8 @@ def _build_farmer_context(
             if pd is not None:
                 try:
                     crop_item["planting_date"] = pd.isoformat()[:10] if hasattr(pd, "isoformat") else str(pd)[:10]
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Could not serialize planting_date: %s", e)
             crops_data.append(crop_item)
         farm_dict["crops"] = crops_data
         farms_data.append(farm_dict)
@@ -148,8 +151,8 @@ async def _persist_advisory_and_tool_calls(
             )
             db.add(tool_call)
         await db.flush()
-    except Exception:
-        pass  # Don't block chat flow if persistence fails
+    except Exception as e:
+        logger.error("Failed to persist advisory/tool-call records: %s", e)
 
 
 @router.post("/")
@@ -216,8 +219,8 @@ async def chat(
             .options(selectinload(Farm.crops))
         )
         farms = list(farms_result.scalars().all() or [])
-    except Exception:
-        pass  # Use minimal context; agent can still answer from query
+    except Exception as e:
+        logger.warning("Failed to load farmer profile/farms; continuing with minimal context: %s", e)
     farmer_context = _build_farmer_context(user["user_id"], profile, farms)
 
     async def event_stream() -> AsyncGenerator[str, None]:

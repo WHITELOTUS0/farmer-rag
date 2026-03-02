@@ -124,14 +124,17 @@ def tool_executor_node(state: AgentState) -> Dict[str, Any]:
             ]
             updates["retrieved_sources"] = (state.get("retrieved_sources") or []) + sources
 
-    # Add tool result to messages for context
+    # Add tool result to messages for context.
+    # Return only the NEW message — messages has operator.add reducer, so LangGraph
+    # and the manual state merge in graph.py both append; returning the full list
+    # would double every prior message on each tool call.
     import json
     tool_result_msg = {
         "role": "tool",
         "tool_name": tool_name,
         "content": json.dumps(output, default=str)[:3000] if success else f"Error: {error}",
     }
-    updates["messages"] = state.get("messages", []) + [tool_result_msg]
+    updates["messages"] = [tool_result_msg]
 
     logger.info(f"✅ Tool {tool_name} completed: success={success}")
 
@@ -154,6 +157,11 @@ def execute_tool_directly(
     Returns:
         Tool result as dictionary
     """
-    registry = get_tool_registry()
-    result = registry.execute(tool_name, **kwargs)
-    return result.to_dict()
+    tool_func = _TOOL_MAP.get(tool_name)
+    if not tool_func:
+        return {"error": f"Unknown tool: {tool_name}. Available: {list(_TOOL_MAP)}"}
+    try:
+        result = tool_func.invoke(kwargs)
+        return result if isinstance(result, dict) else {"result": result}
+    except Exception as e:
+        return {"error": str(e)}

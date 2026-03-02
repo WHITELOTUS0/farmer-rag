@@ -15,7 +15,7 @@ API_URL = "https://api.open-meteo.com/v1/forecast"
 
 
 @retry(
-    retry=retry_if_exception_type(httpx.HTTPError),
+    retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError)),
     wait=wait_exponential(multiplier=1, min=1, max=10),
     stop=stop_after_attempt(3),
 )
@@ -59,7 +59,7 @@ def get_weather_forecast(latitude: float, longitude: float, days: int = 7) -> di
 
     try:
         data = _fetch_weather(params)
-    except httpx.HTTPError as e:
+    except Exception as e:
         logger.error("Weather API request failed: %s", e)
         return {"error": f"Weather API request failed: {str(e)}"}
 
