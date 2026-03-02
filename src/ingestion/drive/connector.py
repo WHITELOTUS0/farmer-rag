@@ -55,7 +55,10 @@ class GoogleDriveConnector:
         """
         settings = get_settings()
         self.credentials_path = credentials_path or settings.google_credentials_path
-        self.token_path = token_path or "token.json"
+        # In production the app directory may be read-only (Railway, Render, etc.).
+        # Use /tmp which is always writable, falling back to the provided path.
+        default_token_path = "/tmp/token.json" if settings.is_production else "token.json"
+        self.token_path = token_path or default_token_path
         self.creds = None
         self.service = None
 
@@ -111,7 +114,7 @@ class GoogleDriveConnector:
             logger.error(f"Failed to generate authorization URL: {e}")
             return None
 
-    def exchange_code_for_token(self, code: str, redirect_uri: str) -> bool:
+    def exchange_code_for_token(self, code: str, redirect_uri: str) -> tuple[bool, str]:
         """
         Exchange authorization code for access token.
 
@@ -120,17 +123,19 @@ class GoogleDriveConnector:
             redirect_uri: The redirect URI used in authorization
 
         Returns:
-            True if successful, False otherwise
+            (True, "") on success, (False, error_message) on failure
         """
-        try:
-            client_config = self._get_client_config()
-            if not client_config:
-                logger.error(
-                    "No credentials. Set GOOGLE_CREDENTIALS_JSON env var "
-                    f"or place credentials.json at {self.credentials_path}"
-                )
-                return False
+        client_config = self._get_client_config()
+        if not client_config:
+            msg = (
+                "Google credentials not configured. "
+                "Set GOOGLE_CREDENTIALS_JSON env var (paste the full contents of credentials.json) "
+                f"or place credentials.json at {self.credentials_path}"
+            )
+            logger.error(msg)
+            return False, msg
 
+        try:
             flow = Flow.from_client_config(
                 client_config,
                 scopes=SCOPES,
@@ -139,18 +144,25 @@ class GoogleDriveConnector:
             flow.fetch_token(code=code)
             self.creds = flow.credentials
 
-            # Save the token
-            with open(self.token_path, "w") as token:
-                token.write(self.creds.to_json())
+            # Save the token — use /tmp in production to avoid read-only filesystem errors
+            try:
+                with open(self.token_path, "w") as token:
+                    token.write(self.creds.to_json())
+                logger.info("Token saved to %s", self.token_path)
+            except OSError as e:
+                # Non-fatal: token is in memory for this request; log and continue
+                logger.warning("Could not save token file (%s): %s — token held in memory only", self.token_path, e)
 
             # Build the service
             self.service = build("drive", "v3", credentials=self.creds)
             logger.info("Google Drive authentication successful")
-            return True
+            return True, ""
 
         except Exception as e:
-            logger.error(f"Failed to exchange code for token: {e}")
-            return False
+            # Surface the real Google error (e.g. redirect_uri_mismatch, invalid_grant)
+            msg = str(e)
+            logger.error("Failed to exchange code for token: %s", msg)
+            return False, msg
 
     def authenticate(self) -> bool:
         """

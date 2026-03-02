@@ -120,11 +120,11 @@ async def handle_google_oauth_callback(
     Exchange OAuth authorization code for access token.
     """
     connector = GoogleDriveConnector()
-    success = connector.exchange_code_for_token(code, redirect_uri)
+    success, error_msg = connector.exchange_code_for_token(code, redirect_uri)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to exchange authorization code for token",
+            detail=error_msg or "Failed to exchange authorization code for token",
         )
 
     return {"success": True, "message": "Google Drive authentication successful"}
