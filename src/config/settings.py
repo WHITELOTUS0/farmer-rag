@@ -125,6 +125,11 @@ class Settings(BaseSettings):
         description="Path to Google OAuth credentials file"
     )
 
+    google_credentials_json: Optional[str] = Field(
+        default=None,
+        description="Google OAuth credentials as JSON string (for Railway/cloud: paste contents of credentials.json)"
+    )
+
     google_oauth_redirect_uri: Optional[str] = Field(
         default=None,
         description="OAuth redirect URI for web-based authentication (e.g., http://localhost:3000/auth/google/callback)"

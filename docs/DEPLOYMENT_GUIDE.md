@@ -144,6 +144,10 @@ Deploy both in one Railway project:
 | `SUPABASE_JWKS_URL` | ✅ | — | `https://xxx.supabase.co/auth/v1/.well-known/jwks.json` |
 | `PRIMARY_MODEL` | | `gpt-4o` | LLM model |
 | `VECTOR_BACKEND` | | `pgvector` | Use pgvector |
+| `GOOGLE_CREDENTIALS_JSON` | For Drive sync | — | Paste full contents of `credentials.json` (for Railway/cloud; no file needed) |
+| `GOOGLE_OAUTH_REDIRECT_URI` | For Drive sync | — | e.g. `https://your-frontend.vercel.app/auth/google/callback` |
+
+**Google Drive (Railway):** Since Railway has no persistent filesystem, set `GOOGLE_CREDENTIALS_JSON` to the raw JSON from your OAuth client credentials file. In Google Cloud Console → APIs & Services → Credentials → your OAuth 2.0 Client → download JSON, then paste the entire contents as the env var value.
 
 **Supabase:** Enable pgvector in your Supabase project (Database → Extensions → add `vector`).
 

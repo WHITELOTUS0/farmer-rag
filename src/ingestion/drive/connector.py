@@ -6,6 +6,7 @@ for syncing documents from Google Drive to the knowledge base.
 """
 
 import io
+import json
 import logging
 import os
 from pathlib import Path
@@ -58,6 +59,24 @@ class GoogleDriveConnector:
         self.creds = None
         self.service = None
 
+    def _get_client_config(self) -> Optional[Dict[str, Any]]:
+        """Load client config from GOOGLE_CREDENTIALS_JSON env or credentials file."""
+        settings = get_settings()
+        if settings.google_credentials_json:
+            try:
+                return json.loads(settings.google_credentials_json)
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid GOOGLE_CREDENTIALS_JSON: {e}")
+                return None
+        if os.path.exists(self.credentials_path):
+            try:
+                with open(self.credentials_path) as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.error(f"Failed to read credentials file: {e}")
+                return None
+        return None
+
     def get_authorization_url(self, redirect_uri: str) -> Optional[str]:
         """
         Generate OAuth authorization URL for web-based authentication.
@@ -69,15 +88,16 @@ class GoogleDriveConnector:
             Authorization URL, or None if failed
         """
         try:
-            if not os.path.exists(self.credentials_path):
+            client_config = self._get_client_config()
+            if not client_config:
                 logger.error(
-                    f"Credentials file not found: {self.credentials_path}. "
-                    "Download OAuth credentials from Google Cloud Console."
+                    "No credentials. Set GOOGLE_CREDENTIALS_JSON env var (paste credentials.json contents) "
+                    f"or place credentials.json at {self.credentials_path}"
                 )
                 return None
 
-            flow = Flow.from_client_secrets_file(
-                self.credentials_path,
+            flow = Flow.from_client_config(
+                client_config,
                 scopes=SCOPES,
                 redirect_uri=redirect_uri,
             )
@@ -103,15 +123,16 @@ class GoogleDriveConnector:
             True if successful, False otherwise
         """
         try:
-            if not os.path.exists(self.credentials_path):
+            client_config = self._get_client_config()
+            if not client_config:
                 logger.error(
-                    f"Credentials file not found: {self.credentials_path}. "
-                    "Download OAuth credentials from Google Cloud Console."
+                    "No credentials. Set GOOGLE_CREDENTIALS_JSON env var "
+                    f"or place credentials.json at {self.credentials_path}"
                 )
                 return False
 
-            flow = Flow.from_client_secrets_file(
-                self.credentials_path,
+            flow = Flow.from_client_config(
+                client_config,
                 scopes=SCOPES,
                 redirect_uri=redirect_uri,
             )
