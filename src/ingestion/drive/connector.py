@@ -5,12 +5,10 @@ Provides OAuth2 authentication and file download capabilities
 for syncing documents from Google Drive to the knowledge base.
 """
 
-import base64
 import io
 import json
 import logging
 import os
-import secrets
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
@@ -27,10 +25,6 @@ logger = logging.getLogger(__name__)
 # Scopes for Google Drive access (read-only)
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
-
-def _generate_code_verifier() -> str:
-    """Generate a PKCE code verifier (43-char base64url string)."""
-    return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
 
 
 class GoogleDriveConnector:
@@ -109,19 +103,21 @@ class GoogleDriveConnector:
                 )
                 return None, None
 
-            code_verifier = _generate_code_verifier()
-
             flow = Flow.from_client_config(
                 client_config,
                 scopes=SCOPES,
                 redirect_uri=redirect_uri,
+                autogenerate_code_verifier=True,
             )
             authorization_url, _ = flow.authorization_url(
                 access_type="offline",
                 include_granted_scopes="true",
                 prompt="consent",
-                code_verifier=code_verifier,
             )
+            # flow.code_verifier is set by autogenerate_code_verifier=True;
+            # the library adds code_challenge + code_challenge_method=S256 to
+            # the auth URL automatically (does NOT expose the verifier in the URL).
+            code_verifier = flow.code_verifier
             return authorization_url, code_verifier
         except Exception as e:
             logger.error(f"Failed to generate authorization URL: {e}")
