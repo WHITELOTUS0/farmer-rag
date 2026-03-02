@@ -5,12 +5,14 @@ Provides OAuth2 authentication and file download capabilities
 for syncing documents from Google Drive to the knowledge base.
 """
 
+import base64
 import io
 import json
 import logging
 import os
+import secrets
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -24,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Scopes for Google Drive access (read-only)
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+
+
+def _generate_code_verifier() -> str:
+    """Generate a PKCE code verifier (43-char base64url string)."""
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
 
 
 class GoogleDriveConnector:
@@ -80,15 +87,18 @@ class GoogleDriveConnector:
                 return None
         return None
 
-    def get_authorization_url(self, redirect_uri: str) -> Optional[str]:
+    def get_authorization_url(self, redirect_uri: str) -> Tuple[Optional[str], Optional[str]]:
         """
         Generate OAuth authorization URL for web-based authentication.
+
+        Uses PKCE (required by Google as of 2024). Returns both the URL and the
+        code_verifier, which must be sent back during token exchange.
 
         Args:
             redirect_uri: The redirect URI registered in Google Cloud Console
 
         Returns:
-            Authorization URL, or None if failed
+            (authorization_url, code_verifier) on success, (None, None) on failure
         """
         try:
             client_config = self._get_client_config()
@@ -97,7 +107,9 @@ class GoogleDriveConnector:
                     "No credentials. Set GOOGLE_CREDENTIALS_JSON env var (paste credentials.json contents) "
                     f"or place credentials.json at {self.credentials_path}"
                 )
-                return None
+                return None, None
+
+            code_verifier = _generate_code_verifier()
 
             flow = Flow.from_client_config(
                 client_config,
@@ -108,19 +120,21 @@ class GoogleDriveConnector:
                 access_type="offline",
                 include_granted_scopes="true",
                 prompt="consent",
+                code_verifier=code_verifier,
             )
-            return authorization_url
+            return authorization_url, code_verifier
         except Exception as e:
             logger.error(f"Failed to generate authorization URL: {e}")
-            return None
+            return None, None
 
-    def exchange_code_for_token(self, code: str, redirect_uri: str) -> tuple[bool, str]:
+    def exchange_code_for_token(self, code: str, redirect_uri: str, code_verifier: Optional[str] = None) -> tuple[bool, str]:
         """
         Exchange authorization code for access token.
 
         Args:
             code: Authorization code from OAuth callback
             redirect_uri: The redirect URI used in authorization
+            code_verifier: PKCE code verifier returned by get_authorization_url (required by Google)
 
         Returns:
             (True, "") on success, (False, error_message) on failure
@@ -141,7 +155,10 @@ class GoogleDriveConnector:
                 scopes=SCOPES,
                 redirect_uri=redirect_uri,
             )
-            flow.fetch_token(code=code)
+            fetch_kwargs: Dict[str, Any] = {"code": code}
+            if code_verifier:
+                fetch_kwargs["code_verifier"] = code_verifier
+            flow.fetch_token(**fetch_kwargs)
             self.creds = flow.credentials
 
             # Save the token — use /tmp in production to avoid read-only filesystem errors

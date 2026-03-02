@@ -100,27 +100,29 @@ async def get_google_oauth_url(
             detail="redirect_uri must be provided as query parameter or set GOOGLE_OAUTH_REDIRECT_URI in settings",
         )
 
-    auth_url = connector.get_authorization_url(final_redirect_uri)
+    auth_url, code_verifier = connector.get_authorization_url(final_redirect_uri)
     if not auth_url:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate authorization URL. Check credentials file.",
         )
 
-    return {"authorization_url": auth_url}
+    return {"authorization_url": auth_url, "code_verifier": code_verifier}
 
 
 @router.post("/oauth/callback")
 async def handle_google_oauth_callback(
     code: str = Form(...),
     redirect_uri: str = Form(...),
+    code_verifier: Optional[str] = Form(default=None),
     user: dict = Depends(require_admin),
 ) -> dict:
     """
     Exchange OAuth authorization code for access token.
+    code_verifier must be the value returned by /oauth/authorize (PKCE).
     """
     connector = GoogleDriveConnector()
-    success, error_msg = connector.exchange_code_for_token(code, redirect_uri)
+    success, error_msg = connector.exchange_code_for_token(code, redirect_uri, code_verifier)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
